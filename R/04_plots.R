@@ -4,6 +4,7 @@ library(stringr)
 library(ggplot2)
 library(gt)
 library(matrixStats)
+library(viridis)
 
 # Global palettes / labels
 
@@ -167,7 +168,7 @@ plot_foi_combined <- function(draws_combined_melt, max_age = 92) {
 
 plot_param_densities_combined <- function(draws_combined_melt) {
   keep <- c("mu[1]", "mu[2]", "mu[3]", "sigma", "psi", "lambda_1", "beta")
-  dd <- draws_combined_melt %>% filter(variable %in% keep)
+  dd <- draws_combined_melt %>% filter(variable %in% keep) %>% filter(!(variable == "beta" & value>0.8))
   
   var_labs <- c(
     "mu[1]" = "mu[S]",
@@ -179,8 +180,10 @@ plot_param_densities_combined <- function(draws_combined_melt) {
     "beta" = "kappa"
   )
   
+  dd$Virus <- factor(dd$Virus, levels = c("CVA6", "EV71", "EV68"))
+  
   ggplot(dd, aes(x = value, color = Virus, fill = Virus)) +
-    geom_density(alpha = 0.25) +
+    geom_density(alpha = 0.5) +
     facet_wrap(
       ~variable,
       scales = "free",
@@ -191,8 +194,16 @@ plot_param_densities_combined <- function(draws_combined_melt) {
     labs(x = "Value", y = "Density") +
     theme_minimal() +
     theme(
-      legend.position = "bottom",
-      strip.text = element_text(size = 18, face = "bold")
+      legend.position = c(0.75, 0.025),
+      legend.justification = c("right", "bottom"),
+      strip.text = element_text(size = 20, face = "bold"),
+      axis.title.x = element_text(size = 18, face = "bold"),
+      axis.title.y = element_text(size = 18, face = "bold"),
+      legend.title = element_text(size = 18, face = "bold"),
+      legend.text = element_text(size = 16),
+      legend.key.height = grid::unit(0.75, "cm"),
+      legend.key.width = grid::unit(0.75, "cm"),
+      legend.key.spacing.y = grid::unit(0.25, "cm")
     )
 }
 
@@ -249,13 +260,11 @@ make_param_table <- function(virus, summary_df) {
   
   gt(tab) %>%
     tab_header(
-      title = paste0("Parameter Summary: ", pretty_virus(virus))
+      title = paste0(pretty_virus(virus), ": Summary Statistics of Fitted Parameters")
     ) %>%
+    gt_theme_nytimes() %>%
     fmt_markdown(columns = variable) %>%
-    fmt_number(
-      columns = c(mean, median, sd, q5, q95, rhat),
-      decimals = 3
-    ) %>%
+    fmt_number(columns = c(-variable), decimals = 3) %>%
     fmt_number(columns = c(ess_bulk, ess_tail), decimals = 0) %>%
     cols_align(
       align = "center",
@@ -272,14 +281,6 @@ make_param_table <- function(virus, summary_df) {
       ),
       locations = cells_column_labels(everything())
     ) %>%
-    tab_style(
-      style = cell_text(font = "Times New Roman", size = px(12)),
-      locations = cells_body(everything())
-    ) %>%
-    tab_style(
-      style = cell_text(font = "Times New Roman", size = px(13), weight = "bold"),
-      locations = cells_title(groups = "title")
-    ) %>%
     cols_width(
       variable ~ px(105),
       mean ~ px(68), median ~ px(68), sd ~ px(68),
@@ -287,7 +288,6 @@ make_param_table <- function(virus, summary_df) {
       ess_bulk ~ px(72), ess_tail ~ px(72)
     ) %>%
     tab_options(
-      table.font.names = "Times New Roman",
       table.font.size = px(14),          
       heading.title.font.size = px(14),
       heading.align = "center",
@@ -379,6 +379,161 @@ simulate_serodynamics <- function(lambda_long, psi, age_max) {
   cbind(S = S, I = I, R = R)
 }
 
+plot_weighted_avg_phi <- function(
+    virus,
+    plot_data,
+    draws_df,
+    summary_df,
+    n_samples = 1000,
+    seed = 1,
+    eps = 0.95
+) {
+  
+  n_states <- detect_n_states(summary_df)
+  
+  age_max <- plot_data$age_max
+  ages <- plot_data$ages
+  tps <- 0:(age_max - 1)
+  
+  phi_points <- plot_data$phi_median
+  n <- length(phi_points)
+  
+  prob_mat <- extract_prob_matrix(summary_df, n = n, k = n_states)
+  
+  set.seed(seed)
+  state <- integer(n)
+  below <- logical(n)
+  
+  for (i in seq_len(n)) {
+    p <- prob_mat[i, ]
+    p[is.na(p)] <- 0
+    p <- p / sum(p)
+    s <- sample.int(n_states, 1, prob = p)
+    state[i] <- s
+    below[i] <- (p[s] < eps)
+  }
+  
+  state_labels <- serostate_levels
+  
+  pts <- data.frame(
+    age = ages,
+    phi = phi_points,
+    state = factor(state_labels[state], levels = state_labels),
+    conf = ifelse(below, "<95%", ">95%")
+  )
+  
+  # Compute state-specific mean φ from (mu_x, sigma)
+  # E[lognormal] = exp(mu + sigma^2 / 2)
+  
+  mu_x <- summary_df %>%
+    filter(grepl("^mu_x\\[", variable)) %>%
+    arrange(variable) %>%
+    pull(mean)
+  
+  sigma <- summary_df %>%
+    filter(variable == "sigma") %>%
+    pull(mean)
+  
+  phi_state <- exp(mu_x + 0.5 * sigma^2)
+  
+  if (n_states == 2) {
+    phi_state <- c(phi_state, 0)
+  }
+  
+  set.seed(seed)
+  idx <- sample.int(nrow(draws_df), size = min(n_samples, nrow(draws_df)))
+  
+  lam_cols <- paste0("lambda_long[", 1:age_max, "]")
+  stopifnot(all(lam_cols %in% names(draws_df)))
+  
+  sims <- lapply(idx, function(r) {
+    lambda_long <- as.numeric(draws_df[r, lam_cols])
+    
+    if ("psi" %in% names(draws_df)) {
+      simulate_serodynamics(lambda_long, draws_df$psi[r], age_max)
+    } else {
+      simulate_serodynamics(lambda_long, psi = 0, age_max)
+    }
+  })
+  
+  S_mat <- do.call(cbind, lapply(sims, function(M) M[, "S"]))
+  I_mat <- do.call(cbind, lapply(sims, function(M) M[, "I"]))
+  
+  if (n_states == 3) {
+    R_mat <- do.call(cbind, lapply(sims, function(M) M[, "R"]))
+    probs_age <- cbind(
+      S = rowMeans(S_mat),
+      Ipp = rowMeans(I_mat),
+      Ip = rowMeans(R_mat)
+    )
+  } else {
+    probs_age <- cbind(
+      S = rowMeans(S_mat),
+      Ipp = rowMeans(I_mat),
+      Ip = 0
+    )
+  }
+  
+  weighted_phi <- rowSums(
+    probs_age * matrix(phi_state, nrow = nrow(probs_age), ncol = 3, byrow = TRUE)
+  )
+  
+  line_df <- data.frame(
+    Age = tps,
+    weighted_phi = weighted_phi
+  )
+  
+  ggplot() +
+    geom_point(
+      data = pts,
+      aes(x = age, y = phi, color = state, shape = conf),
+      alpha = 0.85,
+      show.legend=TRUE
+    ) +
+    geom_line(
+      data = line_df,
+      aes(x = Age, y = weighted_phi),
+      linewidth = 1.4
+    ) +
+    scale_y_log10(
+      breaks = c(10,30,100,300,1000,3000)
+    ) +
+    scale_serostate_color(state_names = state_labels, drop = FALSE) +
+    scale_shape_manual(values = c(">95%" = 16, "<95%" = 0)) +
+    scale_x_continuous(
+      breaks = seq(0, 90, by=10),
+      limits = c(0, age_max)
+    ) +
+    labs(
+      title = pretty_virus(virus),
+      x = "Age (Years)",
+      y = expression(phi),
+      color = "Serostate"
+      ,shape = "Confidence"
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "bottom",
+      axis.title.x = element_text(size = 16, face = "bold"),
+      axis.title.y = element_text(
+        size = 36,
+        angle = 0,
+        vjust = 0.5,
+        face = "bold"
+      ),
+      plot.title = element_text(
+        size = 16,
+        face = "bold",
+        hjust = 0.5
+      ),
+      axis.text.x = element_text(size = 14),
+      axis.text.y = element_text(size = 14)
+    ) + 
+    guides(shape = "none",
+           color = guide_legend(override.aes = list(size=7)))
+}
+
+
 plot_serodynamics <- function(
     virus,
     plot_data,
@@ -455,145 +610,508 @@ plot_serodynamics <- function(
     ) +
     scale_serostate_color(state_names = state_names) +
     scale_serostate_fill(state_names = state_names) +
+    scale_x_continuous(
+      breaks = seq(0, 90, by = 10),
+      limits = c(0, age_max)
+    ) +
     labs(
-      title = paste0("Serodynamics: ", pretty_virus(virus)),
+      title = pretty_virus(virus),
       x = "Age (Years)",
       y = "Proportion",
       color = "Serostate",
       fill = "Serostate"
     ) +
     theme_minimal() +
-    theme(legend.position = "bottom")
+    theme(legend.position = "right",
+          plot.title = element_text(
+            size = 16,
+            face = "bold",
+            hjust = 0.5
+            ),
+          axis.title.x = element_text(size = 16, face = "bold"),
+          axis.title.y = element_text(size = 16, face = "bold"),
+          axis.text.x = element_text(size = 14),
+          axis.text.y = element_text(size = 14),
+          legend.box = "vertical",
+          legend.direction = "vertical",
+          legend.title = element_text(size = 14, face = "bold"),
+          legend.text = element_text(size = 14),
+          legend.key.height = grid::unit(1, "cm"),
+          legend.key.width = grid::unit(2, "cm")
+    ) +
+    guides(color = guide_legend(override.aes = list(linewidth = 2)))
 }
 
-plot_weighted_avg_phi <- function(
+
+
+# new vs old FOI comparison
+plot_foi_new_old <- function(
     virus,
     plot_data,
-    draws_df,
     summary_df,
-    n_samples = 200,
-    seed = 1,
-    eps = 0.95
+    draws_df
 ) {
+  max_age <- plot_data$age_max
+  age_seq <- 0:(max_age - 1)
   
-  n_states <- if (any(grepl("^mu_x\\[3\\]", summary_df$variable))) 3 else 2
+  post <- draws_df %>% dplyr::select(lambda_1, beta)
   
-  age_max <- plot_data$age_max
-  ages <- plot_data$ages
-  tps <- 0:(age_max - 1)
+  FOI_mat <- vapply(
+    seq_len(nrow(post)),
+    function(r) post$lambda_1[r] * exp(-post$beta[r] * age_seq),
+    numeric(length(age_seq))
+  )
+  FOI_mat <- t(FOI_mat)
   
-  phi_points <- plot_data$phi_median
-  n <- length(phi_points)
+  new_df <- data.frame(
+    Age = age_seq,
+    mean = colMeans(FOI_mat),
+    q5 = apply(FOI_mat, 2, quantile, 0.05),
+    q95 = apply(FOI_mat, 2, quantile, 0.95)
+  ) %>% dplyr::filter(Age > 0)
   
-  prob_mat <- extract_prob_matrix(summary_df, n = n, k = n_states)
+  old_fit <- readRDS(file.path("data", "processed", paste0(virus, "_model5_fit.rds")))
   
-  set.seed(seed)
-  state <- integer(n)
-  below <- logical(n)
+  old_post <- rstan::extract(old_fit, pars = c("lambda", "beta"))
   
-  for (i in seq_len(n)) {
-    p <- prob_mat[i, ]
-    p[is.na(p)] <- 0
-    p <- p / sum(p)
-    s <- sample.int(n_states, 1, prob = p)
-    state[i] <- s
-    below[i] <- (p[s] < eps)
+  old_lambda <- old_post$lambda
+  old_beta   <- old_post$beta
+  
+  old_FOI_mat <- matrix(data=NA, nrow=max_age, ncol=length(old_beta))
+  
+  for (i in 1:length(old_beta)) {
+    old_FOI_mat[,i] <- old_lambda[i]*exp(-old_beta[i]*age_seq)
   }
   
-  state_labels <- serostate_levels[seq_len(n_states)]
+  old_df <- data.frame(Age = age_seq,
+                       mean = rowMeans(old_FOI_mat),
+                       q5   = matrixStats::rowQuantiles(old_FOI_mat, probs=0.05),
+                       q95  = matrixStats::rowQuantiles(old_FOI_mat, probs=0.95)
+                       ) %>% dplyr::filter(Age > 0) 
   
-  pts <- data.frame(
-    age = ages,
-    phi = phi_points,
-    state = factor(state_labels[state], levels = state_labels),
-    conf = ifelse(below, "<95%", ">95%")
-  )
-  
-  # Compute state-specific mean φ from (mu_x, sigma)
-  # E[lognormal] = exp(mu + sigma^2 / 2)
-  
-  mu_x <- summary_df %>%
-    filter(grepl("^mu_x\\[", variable)) %>%
-    arrange(variable) %>%
-    pull(mean)
-  
-  sigma <- summary_df %>%
-    filter(variable == "sigma") %>%
-    pull(mean)
-  
-  phi_state <- exp(mu_x + 0.5 * sigma^2)
-  
-  set.seed(seed)
-  idx <- sample.int(nrow(draws_df), size = min(n_samples, nrow(draws_df)))
-  
-  lam_cols <- paste0("lambda_long[", 1:age_max, "]")
-  stopifnot(all(lam_cols %in% names(draws_df)))
-  
-  sims <- lapply(idx, function(r) {
-    lambda_long <- as.numeric(draws_df[r, lam_cols])
-    
-    if ("psi" %in% names(draws_df)) {
-      simulate_serodynamics(lambda_long, draws_df$psi[r], age_max)
-    } else {
-      simulate_serodynamics(lambda_long, psi = 0, age_max)
-    }
-  })
-  
-  S_mat <- do.call(cbind, lapply(sims, function(M) M[, "S"]))
-  I_mat <- do.call(cbind, lapply(sims, function(M) M[, "I"]))
-  
-  if (n_states == 3) {
-    R_mat <- do.call(cbind, lapply(sims, function(M) M[, "R"]))
-    probs_age <- cbind(
-      S = rowMeans(S_mat),
-      Ipp = rowMeans(I_mat),
-      Ip = rowMeans(R_mat)
-    )
-  } else {
-    probs_age <- cbind(
-      S = rowMeans(S_mat),
-      Ipp = rowMeans(I_mat)
-    )
-  }
-  
-  weighted_phi <- rowSums(
-    probs_age * matrix(phi_state, nrow = nrow(probs_age), ncol = n_states, byrow = TRUE)
-  )
-  
-  line_df <- data.frame(
-    Age = tps,
-    weighted_phi = weighted_phi
-  )
+  virus_col   <- virus_cols [[virus]]
   
   ggplot() +
-    geom_point(
-      data = pts,
-      aes(x = age, y = phi, color = state, shape = conf),
-      alpha = 0.85
+    geom_ribbon(
+      data = new_df,
+      aes(x = Age, ymin = q5, ymax = q95, fill = "New"),
+      alpha = 0.3
     ) +
     geom_line(
-      data = line_df,
-      aes(x = Age, y = weighted_phi),
-      linewidth = 1.4
+      data = new_df,
+      aes(x = Age, y = mean, color = "New"),
+      linewidth = 1.5
     ) +
-    scale_y_log10() +
-    scale_serostate_color(state_names = state_labels) +
-    scale_shape_manual(values = c(">95%" = 16, "<95%" = 0)) +
+    geom_ribbon(
+      data = old_df,
+      aes(x = Age, ymin = q5, ymax = q95, fill = "Old"),
+      alpha = 0.3
+    ) +
+    geom_line(
+      data = old_df,
+      aes(x = Age, y = mean, color = "Old"),
+      linewidth = 1.5
+    ) +
     labs(
-      title = paste0("Serostate-weighted mean ", expression(phi), ": ", pretty_virus(virus)),
+      title = pretty_virus(virus),
       x = "Age (Years)",
-      y = expression(phi),
-      color = "Serostate",
-      shape = "Confidence"
+      y = "Force of Infection",
+      color = "Force of Infection",
+      fill = "Force of Infection"
+    ) +
+    scale_x_log10() +
+    scale_y_continuous(
+      breaks = seq(0, 0.6, by = 0.2),
+      limits = c(0, 0.66)
+    ) +
+    scale_color_manual(
+      values = c(
+        "New" = virus_col,
+        "Old" = "grey80"
+      ),
+      labels = c(
+        "New" = "New",
+        "Old" = "Old"
+      )
+    ) + 
+    scale_fill_manual(
+      values = c(
+        "New" = virus_col,
+        "Old" = "grey80"
+      ),
+      labels = c(
+        "New" = "New",
+        "Old" = "Old"
+      )
     ) +
     theme_minimal() +
     theme(
-      legend.position = "bottom",
-      axis.title.y = element_text(
-        size = 16,
-        angle = 0,
-        vjust = 0.5,
-        face = "bold"
+      plot.title = element_text(hjust = 0.5, size = 20, face = "bold"),
+      axis.title = element_text(size = 16, face = "bold"),
+      axis.text = element_text(size = 12),
+      legend.title = element_text(size = 18, face="bold"),
+      legend.text = element_text(size = 16),
+      strip.text.x = element_text(size=20, face="bold"),
+      legend.position = "right",
+      legend.key.width = unit(3, "cm")
+    )  + guides(color = guide_legend(override.aes = list(linewidth=1.5)))
+}
+
+
+# for combined weighted avg phi, serodynamics, and new vs old FoI plots
+plot_patchwork <- function(cva6_plot, ev71_plot, ev68_plot, lines=TRUE, FOI=FALSE) {
+  
+  if (FOI) {
+    ev71_legend <- cowplot::get_legend(
+      ev71_plot + theme(legend.position = "right",
+                        legend.title = element_text(size = 18, face = "bold"),
+                        legend.text = element_text(size = 16),
+                        legend.key.height = grid::unit(1.5, "cm"),
+                        legend.key.width = if (lines) {grid::unit(4, "cm")} else {grid::unit(1, "cm")}
+                        )
+    )
+    
+    patchwork::wrap_plots(
+      cva6_plot + labs(x = NULL) + theme(legend.position = "none"),
+      ev71_plot + labs(x = NULL, y = NULL) + theme(legend.position = "none"),
+      ev68_plot + theme(legend.position = "none"),
+      patchwork::wrap_elements(full = ev71_legend),
+      design = "AB\nCD"
+    ) &
+      theme(
+        legend.position = "none",
+        legend.box = "vertical",
+        legend.direction = "vertical"
+      )
+  }
+  
+  else {
+    
+    patchwork::wrap_plots(
+      cva6_plot + labs(x=NULL),
+      ev71_plot + labs(x=NULL, y=NULL) + theme(legend.position = "none"),
+      ev68_plot                        + theme(legend.position = "none"),
+      patchwork::guide_area(),
+      design = "AB\nCD",
+      guides = "collect"
+    ) &
+      theme(
+        legend.position = "right",
+        legend.box = "vertical",
+        legend.direction = "vertical",
+        legend.title = element_text(size = 18, face = "bold"),
+        legend.text = element_text(size = 16),
+        legend.key.height = grid::unit(1.5, "cm"),
+        legend.key.width = if (lines) {grid::unit(4, "cm")} else {grid::unit(1, "cm")}
+      )
+  }
+}
+
+#### Reed-Muench ####
+
+plot_reed_muench_fit <- function(raw_df, draws_obj, seed = 1) {
+  ddf <- posterior::as_draws_df(draws_obj)
+  
+  phi <- ddf[["phi[1]"]]
+  k1  <- ddf[["k1"]]
+  
+  # d_grid <- exp(seq(log(min(raw_df$dilutions)), log(max(raw_df$dilutions)), length.out = 300))
+  d_grid <- seq(0.75, 350, length.out=500)
+  p_mat <- sapply(d_grid, function(d) stats::pnorm(k1 * (log(phi) - log(d))))
+  
+  fit_df <- data.frame(
+    dilution = d_grid,
+    lo = apply(p_mat, 2, stats::quantile, probs = 0.025),
+    med = apply(p_mat, 2, stats::quantile, probs = 0.5),
+    hi = apply(p_mat, 2, stats::quantile, probs = 0.975)
+  )
+  
+  obs_df <- raw_df %>%
+    dplyr::rowwise() %>%
+    dplyr::mutate(
+      survival = outcome / n_replicates,
+      ci = list(stats::binom.test(outcome, n_replicates)$conf.int),
+      lo = ci[[1]],
+      hi = ci[[2]]
+    ) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(-ci)
+  
+  rm_endpoint <- reed_muench_endpoint(raw_df)
+  bayes_endpoint <- stats::median(phi)
+  
+  ggplot() +
+    geom_ribbon(
+      data = fit_df,
+      aes(x = dilution, ymin = lo, ymax = hi),
+      fill = "steelblue",
+      alpha = 0.25
+    ) +
+    geom_line(
+      data = fit_df,
+      aes(x = dilution, y = med),
+      linetype = "dashed",
+      linewidth = 0.9
+    ) +
+    geom_errorbar(
+      data = obs_df,
+      aes(x = dilutions, ymin = lo, ymax = hi),
+      width = 0
+    ) +
+    geom_point(
+      data = obs_df,
+      aes(x = dilutions, y = survival),
+      color = "black",
+      size = 2
+    ) +
+    geom_point(
+      data = data.frame(dilution = rm_endpoint, survival = 0.5),
+      aes(x = dilution, y = survival),
+      color = "orange2",
+      fill = "orange2",
+      shape = 23,
+      size = 3.5
+    ) +
+    geom_point(
+      data = data.frame(dilution = bayes_endpoint, survival = 0.5),
+      aes(x = dilution, y = survival),
+      color = "red3",
+      shape = 8,
+      size = 3.5
+    ) +
+    scale_x_log10(
+      # breaks = raw_df$dilutions
+      # ,labels = paste0("1:", raw_df$dilutions)
+    ) +
+    scale_y_continuous(
+      limits = c(0, 1),
+      breaks = seq(0, 1, by = 0.25),
+      labels = scales::percent_format(accuracy = 1)
+    ) +
+    labs(
+      x = "Serum dilution",
+      y = "Proportion surviving"
+    ) +
+    theme_minimal()
+}
+
+#### LOOCV ####
+make_loo_table <- function(loo_df) {
+  gt::gt(loo_df) %>%
+    gt::tab_header(
+      title = "LOOCV comparison of SI and SII serocatalytic models"
+    ) %>%
+    gt::fmt_number(columns = c(ELPD_diff, SE_diff), decimals = 1) %>%
+    gt::cols_label(
+      Virus = "Enterovirus",
+      Model = "Model Type",
+      ELPD_diff = "ELPD diff.",
+      SE_diff = "SE diff."
+    ) %>%
+    gt::tab_style(
+      style = gt::cell_fill(color = "khaki1"),
+      locations = gt::cells_body(
+        rows = ELPD_diff == 0 & SE_diff == 0
       )
     )
 }
+
+#### Misc. ####
+
+plot_phi_vs_titer_combined <- function(phi_titer_summary_df) {
+  
+  df <- phi_titer_summary_df %>%
+    dplyr::mutate(
+      virus = factor(virus, levels = c("EV71", "CVA6", "EV68"))
+    ) %>%
+    dplyr::filter(titer < 2048) # for plotting
+  
+  df$virus <- factor(df$virus, levels = c("CVA6", "EV71", "EV68"))
+  
+  ggplot(df, aes(x = titer, color = virus)) +
+    
+    # vertical 95% credible intervals
+    geom_linerange(
+      aes(ymin = phi_lo, ymax = phi_hi),
+      linewidth = 0.9
+      ,position = position_dodge2(width=30)
+    ) +
+    
+    # median points
+    geom_point(
+      aes(y = phi_med),
+      size = 2.8
+      ,position = position_dodge2(width=30)
+    ) +
+    
+    scale_y_log10() +
+    
+    scale_x_continuous(
+      breaks = c(0, 250, 500, 750, 1000),
+      limits = c(0, 1100)
+    ) +
+    
+    scale_virus_color(name = "Enterovirus") +
+    
+    labs(
+      x = "Endpoint dilution titre",
+      y = "Antibody concentration"
+    ) +
+    
+    theme_minimal() +
+    theme(
+      legend.position = "right",
+      legend.direction = "vertical",
+      legend.box = "vertical"
+    )
+}
+
+plot_phi_over_dilution <- function(df) {
+  
+  df <- df %>%
+    dplyr::mutate(
+      virus = factor(virus, levels = c("CVA6", "EV71", "EV68"))
+    )
+  
+  ggplot(df, aes(x = dilutions, y = log10(phi_over_d), fill = virus, color = virus,
+                 group = interaction(dilutions, virus))) +
+    geom_boxplot(
+      orientation = "x",
+      position = position_dodge(width = 0.75),
+      width = 0.55,
+      outlier.shape = NA,
+      linewidth = 0.6,
+      color = "black"
+    ) +
+    scale_x_continuous(
+      trans = "log2",
+      breaks = sort(unique(df$dilutions))
+    ) +
+    scale_y_continuous(
+      breaks = scales::pretty_breaks(n = 6)
+    ) +
+    scale_virus_fill() +
+    scale_virus_color() +
+    labs(
+      x = "Serum dilution",
+      y = expression(log[10](phi[i] / d))
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "right",
+      legend.direction = "vertical",
+      legend.box = "vertical",
+      panel.border = element_rect(color = "black", fill = NA, linewidth = 0.2)
+    )
+}
+
+make_fig_2 <- function(reed_muench_plot, phi_vs_titer_plot, conc_vs_dilution_plot) {
+  patchwork::wrap_plots(
+    reed_muench_plot + 
+      theme(
+        axis.title = element_text(size = 16, face = "bold"),
+        axis.text  = element_text(size = 14),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.2)
+      ),
+    
+    phi_vs_titer_plot + 
+      theme(
+        axis.title = element_text(size = 16, face = "bold"),
+        axis.text  = element_text(size = 14),
+        legend.position = c(0.8, 0.5),
+        legend.title = element_text(size = 16),
+        legend.text = element_text(size = 14),
+        legend.box.background = element_rect(color = "black"),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.2)
+        ),
+    
+    conc_vs_dilution_plot + 
+      theme(
+        axis.title.x = element_text(size = 16, face = "bold"),
+        axis.title.y = element_text(size = 20, face = "bold"),
+        axis.text  = element_text(size = 14),
+        legend.position = "none"
+        ),
+    
+    nrow = 1,
+    widths = c(1, 1, 1)
+  ) +
+    patchwork::plot_annotation(tag_levels = "A", tag_prefix = "(", tag_suffix = ")") &
+    theme(
+      plot.tag = element_text(face = "bold")
+    )
+}
+
+plot_phi_by_age_group <- function(phi_age_group_df) {
+  
+  age_levels <- c(
+    "[0,5)",
+    "[5,10)",
+    "[10,20)",
+    "[20,35)",
+    "[35,55)",
+    "[55,80)",
+    "[80,95]"
+  )
+  
+  df <- phi_age_group_df %>%
+    dplyr::mutate(
+      virus = factor(virus, levels = c("CVA6", "EV71", "EV68")),
+      age_group = factor(age_group, levels = age_levels)
+    )
+  
+  counts_df <- df %>%
+    dplyr::group_by(virus, age_group) %>%
+    dplyr::summarise(n = dplyr::n(), .groups = "drop")
+  
+  max_phi <- max(df$phi, na.rm = TRUE)
+  label_x  <- min(max_phi * 1.10, 2700)
+  
+  ggplot(df, aes(x = phi, y = age_group, color = age_group)) +
+    geom_boxplot(
+      orientation = "y",
+      outlier.shape = NA,
+      width = 0.7,
+      linewidth = 0.6,
+      fill = NA
+    ) +
+    geom_text(
+      data = counts_df,
+      aes(x = label_x, y = age_group, label = paste0("n = ", n)),
+      inherit.aes = FALSE,
+      hjust = 0,
+      vjust = -0.6,   
+      size = 2.5,
+      show.legend = FALSE
+    ) +
+    ggplot2::scale_color_viridis_d(option = "D", end = 0.9, guide = "none") +
+    scale_x_continuous(
+      # limits = c(0,2200)
+    ) +
+    facet_wrap(
+      ~ virus,
+      nrow = 1,
+      labeller = as_labeller(virus_labels)
+    ) +
+    coord_cartesian(clip = "off") +
+    labs(
+      x = "Antibody concentration",
+      y = "Age (years)"
+    ) +
+    theme_minimal() +
+    theme(
+      strip.text = element_text(face = "bold"),
+      strip.background = element_rect(
+        fill = "grey85",
+        color = "black",
+        linewidth = 0.2
+      ),
+      legend.position = "none",
+      panel.border = element_rect(color = "black", fill = NA, linewidth = 0.2),
+      panel.spacing = grid::unit(0.8, "lines"),
+      plot.margin = margin(5.5, 45, 5.5, 5.5)
+    )
+}
+
+
+

@@ -82,6 +82,7 @@ model {
 generated quantities {
 
   matrix[n,2] prob_by_group;
+  vector[n] log_likelihood;
 
   for(i in 1:n) {
 
@@ -102,6 +103,7 @@ generated quantities {
     }
 
     real lse = log_sum_exp(lp_state);
+    log_likelihood[i] = lse;
     prob_by_group[i] = to_row_vector(exp(lp_state - lse));
   }
 }

@@ -277,8 +277,9 @@ antibody_ppc_overlay_plot <- function(virus_prefix,
     facet_wrap(~ facet_label, ncol = ncol) +
     labs(
       x = "Dilution",
-      y = "Mean survival proportion",
-      title = paste0(virus_prefix, ": Prior trajectories + Posterior predictive PPCs by archetype")
+      y = "Mean survival proportion"
+      # ,title = paste0(virus_prefix, ": Prior trajectories + Posterior predictive PPCs by archetype")
+      ,title = pretty_virus(virus_prefix)
     ) +
     theme_minimal() +
     theme(strip.text = element_text(face = "bold"))

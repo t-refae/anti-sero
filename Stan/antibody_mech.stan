@@ -44,8 +44,8 @@ model {
 } 
 
 generated quantities {
-  vector[n_individuals] LD50;
+  vector[n_individuals] log_LD50;
   for (i in 1:n_individuals) {
-    LD50[i] = log_phi[i];
+    log_LD50[i] = log_phi[i];
   }
 }
