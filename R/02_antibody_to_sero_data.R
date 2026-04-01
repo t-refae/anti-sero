@@ -6,7 +6,7 @@ library(posterior)
 library(matrixStats)
 
 # prep antibody raw-well data into Stan list + per-serum metadata 
-prep_antibody_data <- function(virus, raw_prefix, data_dir = "data") {
+prep_antibody_data <- function(virus, raw_prefix, data_dir = "data/raw") {
   csv_path <- file.path(data_dir, paste0(raw_prefix, "_raw_well_observations.csv"))
   dat <- read.csv(csv_path) %>%
     mutate(serumID = as.character(serumID)) %>%
