@@ -12,8 +12,8 @@ tar_option_set(
     "dplyr", "tidyr", "purrr", "stringr", "posterior", "matrixStats", "reshape2",
     
     # plotting / saving pdfs
-    "ggplot2", "gt", "gtExtras", "cowplot", "grid", "gridExtra",
-    "patchwork", "scales", "pdftools", "showtext", "viridis"
+    "ggplot2", "gt", "gtExtras", "cowplot", "grid", "gridExtra", "khroma",
+    "patchwork", "scales", "pdftools", "showtext", "viridis", "GGally"
   ),
   format = "qs"
 )
@@ -611,6 +611,30 @@ list(
   ),
   
   # -------- Misc. --------
+  
+  # SI Fig 1
+  tar_target(
+    survival_plots,
+    plot_survival(
+      baseline_k1 = 2,
+      baseline_phi = 35
+    )
+  ),
+  
+  tar_target(file_survival_plots, save_plot_pdf(survival_plots, "outputs/misc/survival_plots.pdf", 8, 12)),
+  
+  # SI Fig 2
+  tar_target(
+    reed_muench_marginal_joint_bivariate_plot,
+    plot_reed_muench_marginal_joint_bivariate(
+      reed_muench_fit = ab_reed_muench_mcmc_antibody_mech
+    )
+  ),
+  
+  tar_target(file_reed_muench_marginal_joint_bivariate_plot,
+             save_plot_pdf(reed_muench_marginal_joint_bivariate_plot,
+                           "outputs/reed_muench/posterior_pairs_plot.pdf", 10, 10)),
+  
   tar_target(
     phi_titer_summary_CVA6,
     make_phi_titer_summary(

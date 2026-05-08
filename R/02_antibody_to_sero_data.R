@@ -228,6 +228,14 @@ combine_loo_tables <- function(ev71_loo, cva6_loo, ev68_loo) {
 }
 
 #### Misc. ####
+
+## SI Fig 1
+
+survival_func <- function(k1, phi, d) {
+  survival_prob <- pnorm(k1*(log(phi) - log(d)))
+  return(survival_prob)
+}
+
 make_phi_titer_summary <- function(raw_df, log_phi_draws, virus) {
   
   # use R-M method to calculate endpoint titer (TCID50), with boundary fixes

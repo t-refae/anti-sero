@@ -599,6 +599,21 @@ plot_serodynamics <- function(
   
   df_long$State <- factor(df_long$State, levels = state_names)
   
+  
+  # filter out (unmodelled) I+ state for EV68 (but keep legend)
+  if (virus == "EV68") {
+    df_long <- df_long %>% dplyr::filter(State != "Ip")
+  }
+  
+  # make dummy df to keep consistent legend across virus plots
+  legend_df <- data.frame(
+    Age = NA_real_,
+    mean = NA_real_,
+    lo = NA_real_,
+    hi = NA_real_,
+    State = factor(state_names, levels = state_names)
+  )
+  
   ggplot(df_long, aes(x = Age)) +
     geom_ribbon(
       aes(ymin = lo, ymax = hi, fill = State),
@@ -608,8 +623,31 @@ plot_serodynamics <- function(
       aes(y = mean, color = State),
       linewidth = 1.3
     ) +
-    scale_serostate_color(state_names = state_names) +
-    scale_serostate_fill(state_names = state_names) +
+    
+    # for legend only
+    geom_ribbon(
+      data = legend_df,
+      aes(ymin = lo, ymax = hi, fill = State),
+      alpha = 0.18,
+      show.legend = TRUE,
+      na.rm = TRUE
+    ) +
+    
+    # for legend only
+    geom_line(
+      data = legend_df,
+      aes(y = mean, color = State),
+      linewidth = 1.3,
+      show.legend = TRUE,
+      na.rm = TRUE
+    ) +
+    
+    scale_serostate_color(state_names = state_names,
+                          limits = state_names,
+                          drop = FALSE) +
+    scale_serostate_fill(state_names = state_names,
+                         limits = state_names,
+                         drop = FALSE) +
     scale_x_continuous(
       breaks = seq(0, 90, by = 10),
       limits = c(0, age_max)
@@ -787,14 +825,7 @@ plot_patchwork <- function(cva6_plot, ev71_plot, ev68_plot, lines=TRUE, FOI=FALS
   
   else {
     
-    patchwork::wrap_plots(
-      cva6_plot + labs(x=NULL),
-      ev71_plot + labs(x=NULL, y=NULL) + theme(legend.position = "none"),
-      ev68_plot                        + theme(legend.position = "none"),
-      patchwork::guide_area(),
-      design = "AB\nCD",
-      guides = "collect"
-    ) &
+    legend_plot <- cva6_plot + 
       theme(
         legend.position = "right",
         legend.box = "vertical",
@@ -802,8 +833,33 @@ plot_patchwork <- function(cva6_plot, ev71_plot, ev68_plot, lines=TRUE, FOI=FALS
         legend.title = element_text(size = 18, face = "bold"),
         legend.text = element_text(size = 16),
         legend.key.height = grid::unit(1.5, "cm"),
-        legend.key.width = if (lines) {grid::unit(4, "cm")} else {grid::unit(1, "cm")}
+        legend.key.width = if (lines) {
+          grid::unit(4, "cm")
+        } else {
+          grid::unit(1, "cm")}
       )
+    
+    legend_grob <- cowplot::get_legend(legend_plot)
+    
+    patchwork::wrap_plots(
+      cva6_plot + labs(x=NULL)         + theme(legend.position = "none"),
+      ev71_plot + labs(x=NULL, y=NULL) + theme(legend.position = "none"),
+      ev68_plot                        + theme(legend.position = "none"),
+      patchwork::wrap_elements(full = legend_grob),
+      design = "AB\nCD"
+    ) # &
+    #   theme(
+    #     legend.position = "right",
+    #     legend.box = "vertical",
+    #     legend.direction = "vertical",
+    #     legend.title = element_text(size = 18, face = "bold"),
+    #     legend.text = element_text(size = 16),
+    #     legend.key.height = grid::unit(1.5, "cm"),
+    #     legend.key.width = if (lines) {
+    #       grid::unit(4, "cm")
+    #     } else {
+    #         grid::unit(1, "cm")}
+    #   )
   }
 }
 
@@ -895,7 +951,7 @@ plot_reed_muench_fit <- function(raw_df, draws_obj, seed = 1) {
     theme_minimal()
 }
 
-#### LOOCV ####
+#### LOO-CV ####
 make_loo_table <- function(loo_df) {
   gt::gt(loo_df) %>%
     gt::tab_header(
@@ -917,6 +973,109 @@ make_loo_table <- function(loo_df) {
 }
 
 #### Misc. ####
+
+## SI Fig 1
+
+plot_survival <- function(baseline_k1, baseline_phi) {
+  
+  # dilution seq
+  d_seq <- seq(1, 350, by = 0.01)
+  
+  roma_colors <- color("roma")
+  font_size <- 24
+  
+  k1_vals <- seq(0, 2, length.out=8)
+  df_k1 <- expand.grid(d = d_seq, k1 = k1_vals)
+  df_k1$survival_prob <- with(df_k1, survival_func(k1, baseline_phi, d))
+  
+  p1 <- ggplot(df_k1, aes(x = d, y = survival_prob, group = k1, color = k1)) +
+    geom_line(lwd = 1.2) +
+    scale_x_log10(breaks = c(1, 5, 10, 50, 100, 500, 1000)) +
+    scale_y_continuous(labels = percent_format(accuracy = 1), breaks = seq(0, 1, by = 0.2)) +
+    scale_color_gradientn(
+      name = expression(k[1]),
+      colours = roma_colors(length(k1_vals)),
+      breaks = seq(0, 10, by = 2)
+    ) +
+    labs(x = "Dilution", y = "Survival") +
+    theme_minimal() +
+    theme(
+      axis.line = element_line(colour = "black"),
+      legend.key.height = unit(2, "cm"),
+      legend.title.align = 0.5,
+      legend.title = element_text(size = font_size, margin = margin(b = 30)),
+      legend.text = element_text(size = font_size),
+      axis.title = element_text(size = font_size),
+      axis.text = element_text(size = font_size)
+    )
+  
+  phi_vals <- seq(1, 35, length.out = 8)
+  df_phi <- expand.grid(d = d_seq, phi = phi_vals)
+  df_phi$survival_prob <- with(df_phi, survival_func(baseline_k1, phi, d))
+  
+  p3 <- ggplot(df_phi, aes(x = d, y = survival_prob, group = phi, color = phi)) +
+    geom_line(lwd = 1.2) +
+    scale_x_log10(breaks = c(1, 5, 10, 50, 100, 500, 1000)) +
+    scale_y_continuous(labels = percent_format(accuracy = 1), breaks = seq(0, 1, by = 0.2)) +
+    scale_color_gradientn(
+      name = expression(phi),
+      colours = roma_colors(length(phi_vals)),
+      breaks = seq(5, 35, by = 5)
+    ) +
+    labs(x = "Dilution", y = "Survival") +
+    theme_minimal() +
+    theme(
+      axis.line = element_line(colour = "black"),
+      legend.key.height = unit(2, "cm"),
+      legend.title.align = 0.5,
+      legend.title = element_text(size = font_size, margin = margin(b = 30)),
+      legend.text = element_text(size = font_size),
+      axis.title = element_text(size = font_size),
+      axis.text = element_text(size = font_size)
+    )
+  
+  return(p3 / p1)
+}
+
+## SI Fig 2
+
+plot_reed_muench_marginal_joint_bivariate <- function(reed_muench_fit) {
+  font_size=20
+  
+  posterior_samples <- reed_muench_fit$draws(c("phi", "k1")) %>% as.data.frame()
+  
+  posterior_samples <- data.frame(phi = cbind(melt(posterior_samples[,1:4])$value),
+                                  k1 = cbind(melt(posterior_samples[,5:8])$value))
+  
+  colnames(posterior_samples) <- c("phi", expression(k[1]))
+  
+  col_labels <- c(
+    paste0(expression(phi), "\n"),
+    expression(k[1])
+  )
+  
+  ggpairs(
+    posterior_samples,
+    # columnLabels = col_labels,
+    diag = list(continuous = wrap("barDiag", fill = "steelblue", bins=30)),
+    upper = list(continuous = wrap("points", alpha = 0.5, col="steelblue")),
+    lower = list(continuous = wrap("points", alpha = 0.5, col="steelblue")),
+    labeller = label_parsed
+  ) + theme_minimal() +
+    theme(
+      # panel.grid.major = element_blank(),
+      # panel.grid.minor = element_blank(),
+      axis.line = element_line(colour = "black"),
+      legend.key.height = unit(2, "cm"),
+      legend.title.align = 0.5,
+      legend.title = element_text(size = font_size),
+      legend.text = element_text(size = font_size),
+      axis.title = element_text(size = font_size),
+      axis.text = element_text(size = font_size),
+      strip.text = element_text(size = font_size)
+    )
+  
+}
 
 plot_phi_vs_titer_combined <- function(phi_titer_summary_df) {
   
