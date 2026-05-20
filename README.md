@@ -1,4 +1,4 @@
-# anti-sero
+# Bayesian inference from virus neutralisation assay data
 
 Bayesian pipeline from raw virus neutralisation assay data to age-dependent force of infection estimates for CVA6, EV-A71, and EV-D68.
 
