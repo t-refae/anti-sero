@@ -9,9 +9,9 @@ library(viridis)
 # Global palettes / labels
 
 serostate_cols <- c(
-  S   = "#1F77B4FF",   # blue
-  Ipp = "#FF7F0EFF",   # orange
-  Ip  = "#8B4513"      # brown
+  S   = "#1F77B4FF",
+  Ipp = "#FF7F0EFF",
+  Ip  = "#8B4513"
 )
 
 serostate_levels <- c("S", "Ipp", "Ip")
@@ -106,7 +106,6 @@ plot_foi_short_long <- function(virus, plot_data, summary_df, draws_df) {
       mean = mean, q5 = q5, q95 = q95
     ) %>% filter(Age > 0)
   
-  # short_col <- if (virus == "EV71") "#A020F0" else "#009E73"
   short_col <- virus_cols[[virus]]
   
   ggplot() +
@@ -313,7 +312,7 @@ plot_phi_points <- function(virus, plot_data, summary_df, eps = 0.95) {
   
   prob_mat <- extract_prob_matrix(summary_df, n = n, k = 3)
   
-  # sample a state for visualization (consistent with your earlier approach)
+  # sample a state for visualisation
   set.seed(1)
   state <- integer(n)
   below <- logical(n)
@@ -421,9 +420,6 @@ plot_weighted_avg_phi <- function(
     state = factor(state_labels[state], levels = state_labels),
     conf = ifelse(below, "<95%", ">95%")
   )
-  
-  # Compute state-specific mean φ from (mu_x, sigma)
-  # E[lognormal] = exp(mu + sigma^2 / 2)
   
   mu_x <- summary_df %>%
     filter(grepl("^mu_x\\[", variable)) %>%
@@ -847,19 +843,7 @@ plot_patchwork <- function(cva6_plot, ev71_plot, ev68_plot, lines=TRUE, FOI=FALS
       ev68_plot                        + theme(legend.position = "none"),
       patchwork::wrap_elements(full = legend_grob),
       design = "AB\nCD"
-    ) # &
-    #   theme(
-    #     legend.position = "right",
-    #     legend.box = "vertical",
-    #     legend.direction = "vertical",
-    #     legend.title = element_text(size = 18, face = "bold"),
-    #     legend.text = element_text(size = 16),
-    #     legend.key.height = grid::unit(1.5, "cm"),
-    #     legend.key.width = if (lines) {
-    #       grid::unit(4, "cm")
-    #     } else {
-    #         grid::unit(1, "cm")}
-    #   )
+    )
   }
 }
 
@@ -935,10 +919,7 @@ plot_reed_muench_fit <- function(raw_df, draws_obj, seed = 1) {
       shape = 8,
       size = 3.5
     ) +
-    scale_x_log10(
-      # breaks = raw_df$dilutions
-      # ,labels = paste0("1:", raw_df$dilutions)
-    ) +
+    scale_x_log10() +
     scale_y_continuous(
       limits = c(0, 1),
       breaks = seq(0, 1, by = 0.25),
@@ -1244,9 +1225,7 @@ plot_phi_by_age_group <- function(phi_age_group_df) {
       show.legend = FALSE
     ) +
     ggplot2::scale_color_viridis_d(option = "D", end = 0.9, guide = "none") +
-    scale_x_continuous(
-      # limits = c(0,2200)
-    ) +
+    scale_x_continuous() +
     facet_wrap(
       ~ virus,
       nrow = 1,
@@ -1271,6 +1250,3 @@ plot_phi_by_age_group <- function(phi_age_group_df) {
       plot.margin = margin(5.5, 45, 5.5, 5.5)
     )
 }
-
-
-
