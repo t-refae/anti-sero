@@ -1,4 +1,4 @@
-# Bayesian inference from virus neutralisation assay data
+# [Bayesian inference from virus neutralisation assay data]([url](https://doi.org/10.64898/2026.05.18.726027))
 
 Bayesian pipeline from raw virus neutralisation assay data to age-dependent force of infection estimates for CVA6, EV-A71, and EV-D68.
 
