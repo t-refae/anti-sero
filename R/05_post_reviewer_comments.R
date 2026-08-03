@@ -178,6 +178,7 @@ combine_model_loo_tables <- function(...) {
 }
 
 
+
 #### k0 sensitivity analysis ####
 ##
 ## refits antibody_mech_k0.stan with k0 held at -2, -1, 0, 1, 2 [and with k0 freely estimated]
@@ -541,3 +542,30 @@ plot_k0_ridge <- function(fit_free, virus = "CVA6") {
     ggplot2::theme_bw(base_size = 9)
 }
 
+
+
+#### mean vs median phi (clarifying plots) ####
+
+## mixture median of phi at a given age
+##
+## solve sum_x w_x Phi((log m - mu_x)/sigma) = 0.5
+
+mixture_phi_median <- function(w, mu_x, sigma) {
+  w <- w[seq_along(mu_x)]
+  if (sum(w) <= 0) return(NA_real_)
+  w <- w / sum(w)
+  f <- function(z) sum(w * stats::pnorm((z - mu_x) / sigma)) - 0.5
+  exp(stats::uniroot(f, lower = min(mu_x) - 6 * sigma,
+                     upper = max(mu_x) + 6 * sigma)$root)
+}
+
+#' Mean and median of the fitted mixture at every age
+mixture_phi_summaries <- function(probs_age, mu_x, sigma) {
+  k <- length(mu_x)
+  P <- probs_age[, seq_len(k), drop = FALSE]
+  data.frame(
+    Age    = seq_len(nrow(P)) - 1L,
+    mean   = as.numeric(P %*% exp(mu_x + 0.5 * sigma^2)),
+    median = apply(P, 1, mixture_phi_median, mu_x = mu_x, sigma = sigma)
+  )
+}

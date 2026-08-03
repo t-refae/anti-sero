@@ -470,14 +470,20 @@ plot_weighted_avg_phi <- function(
     )
   }
   
-  weighted_phi <- rowSums(
-    probs_age * matrix(phi_state, nrow = nrow(probs_age), ncol = 3, byrow = TRUE)
-  )
+  # weighted_phi <- rowSums(
+  #   probs_age * matrix(phi_state, nrow = nrow(probs_age), ncol = 3, byrow = TRUE)
+  # )
+  # 
+  # line_df <- data.frame(
+  #   Age = tps,
+  #   weighted_phi = weighted_phi
+  # )
   
-  line_df <- data.frame(
-    Age = tps,
-    weighted_phi = weighted_phi
-  )
+  line_df <- mixture_phi_summaries(probs_age, mu_x, sigma) |>
+    tidyr::pivot_longer(c(mean, median),
+                        names_to = "Summary", values_to = "phi") |>
+    dplyr::mutate(Summary = factor(Summary, c("mean", "median"),
+                                   c("Mean", "Median")))
   
   ggplot() +
     geom_point(
@@ -488,9 +494,10 @@ plot_weighted_avg_phi <- function(
     ) +
     geom_line(
       data = line_df,
-      aes(x = Age, y = weighted_phi),
-      linewidth = 1.4
+      aes(x = Age, y = phi, linetype = Summary),
+      linewidth = 1.2
     ) +
+    scale_linetype_manual(values = c(Mean = "solid", Median = "dashed")) +
     scale_y_log10(
       breaks = c(10,30,100,300,1000,3000)
     ) +
@@ -506,6 +513,7 @@ plot_weighted_avg_phi <- function(
       y = expression(phi),
       color = "Serostate"
       ,shape = "Confidence"
+      ,linetype= "Summary"
     ) +
     theme_minimal() +
     theme(
@@ -526,7 +534,9 @@ plot_weighted_avg_phi <- function(
       axis.text.y = element_text(size = 14)
     ) + 
     guides(shape = "none",
-           color = guide_legend(override.aes = list(size=7)))
+           color = guide_legend(override.aes = list(size=7)),
+           linetype = guide_legend(order = 2)
+           )
 }
 
 
@@ -1070,6 +1080,16 @@ plot_phi_vs_titer_combined <- function(phi_titer_summary_df) {
   
   ggplot(df, aes(x = titer, color = virus)) +
     
+    # log-scaled identity line
+    geom_function(
+      fun = identity,
+      xlim = c(1, 1100),
+      inherit.aes = FALSE,
+      colour = "black",
+      linetype = "dashed",
+      linewidth = 0.7
+    ) +
+    
     # vertical 95% credible intervals
     geom_linerange(
       aes(ymin = phi_lo, ymax = phi_hi),
@@ -1205,7 +1225,11 @@ plot_phi_by_age_group <- function(phi_age_group_df) {
     dplyr::summarise(n = dplyr::n(), .groups = "drop")
   
   max_phi <- max(df$phi, na.rm = TRUE)
-  label_x  <- min(max_phi * 1.10, 2700)
+  label_x  <- min(max_phi * 1.15, 2700)
+  
+  mean_df <- df %>%
+    dplyr::group_by(virus, age_group) %>%
+    dplyr::summarise(phi = mean(phi), .groups = "drop")
   
   ggplot(df, aes(x = phi, y = age_group, color = age_group)) +
     geom_boxplot(
@@ -1215,6 +1239,8 @@ plot_phi_by_age_group <- function(phi_age_group_df) {
       linewidth = 0.6,
       fill = NA
     ) +
+    geom_point(data = mean_df, aes(x = phi, y = age_group),
+               inherit.aes = FALSE, shape = 18, size = 2.6) +
     geom_text(
       data = counts_df,
       aes(x = label_x, y = age_group, label = paste0("n = ", n)),
@@ -1225,7 +1251,8 @@ plot_phi_by_age_group <- function(phi_age_group_df) {
       show.legend = FALSE
     ) +
     ggplot2::scale_color_viridis_d(option = "D", end = 0.9, guide = "none") +
-    scale_x_continuous() +
+    scale_x_log10(breaks = c(10, 30, 100, 300, 1000, 3000),
+                  labels = c("10", "30", "100", "300", "1000", "3000")) +
     facet_wrap(
       ~ virus,
       nrow = 1,
