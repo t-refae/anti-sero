@@ -1,12 +1,13 @@
 # _targets.R
 library(targets)
 library(stantargets)
+library(tarchetypes)
 
 # global options
 tar_option_set(
   packages = c(
     # core functionality
-    "targets", "stantargets", "cmdstanr",  "loo",
+    "targets", "stantargets", "tarchetypes", "cmdstanr",  "loo",
     
     # data analysis tools
     "dplyr", "tidyr", "purrr", "stringr", "posterior", "matrixStats", "reshape2",
@@ -20,6 +21,7 @@ tar_option_set(
 
 # load all functions in R/ directory
 tar_source()
+source("k0_pipeline.R")
 
 # to render tables
 ensure_chromote_browser()
@@ -41,6 +43,11 @@ sero_chains        <- 4
 sero_parallel      <- 4
 sero_seed          <- 2
 sero_refresh       <- 200
+
+# seroreversion fits: omega is weakly identified and needs longer adaptation
+sero_sr_iter_warmup <- 500
+sero_sr_adapt_delta <- 0.9
+sero_omega_prior_sd <- 0.1   # half-normal(0, 0.1): median half-life ~10 years
 
 # thin antibody posterior draws for speed (NULL = no thinning)
 n_phi_draws_thin <- 500 #NULL 
@@ -781,6 +788,159 @@ list(
       12, 5
     ),
     format = "file"
-  )
+  ),
   
+  #### Seroreversion fits (testing) ####
+
+  tar_target(
+    sero_sr_data_CVA6,
+    add_sero_switches(
+      sero_stan_data_CVA6,
+      estimate_omega = 1L,
+      omega_prior_sd = sero_omega_prior_sd
+    )
+  ),
+  
+  tar_stan_mcmc( # SIS:
+    name = "CVA6_sr",
+    stan_files = "Stan/antibody_sero_sis.stan",
+    data = sero_sr_data_CVA6,
+    iter_warmup = sero_sr_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_sr_iter_warmup,
+    chains = sero_chains,
+    parallel_chains = sero_parallel,
+    adapt_delta = sero_sr_adapt_delta,
+    seed = sero_seed,
+    refresh = sero_refresh
+  ),
+  
+  tar_stan_mcmc( # SIIS
+    name = "CVA6_sr_3",
+    stan_files = "Stan/antibody_sero_siis.stan",
+    data = sero_sr_data_CVA6,
+    iter_warmup = sero_sr_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_sr_iter_warmup,
+    chains = sero_chains,
+    parallel_chains = sero_parallel,
+    adapt_delta = sero_sr_adapt_delta,
+    seed = sero_seed,
+    refresh = sero_refresh
+  ),
+  
+  tar_target(
+    sero_sr_data_EV71,
+    add_sero_switches(
+      sero_stan_data_EV71,
+      estimate_omega = 1L,
+      omega_prior_sd = sero_omega_prior_sd
+    )
+  ),
+  tar_stan_mcmc( # SIS:
+    name = "EV71_sr",
+    stan_files = "Stan/antibody_sero_sis.stan",
+    data = sero_sr_data_EV71,
+    iter_warmup = sero_sr_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_sr_iter_warmup,
+    chains = sero_chains,
+    parallel_chains = sero_parallel,
+    adapt_delta = sero_sr_adapt_delta,
+    seed = sero_seed,
+    refresh = sero_refresh
+  ),
+  
+  tar_stan_mcmc( # SIIS
+    name = "EV71_sr_3",
+    stan_files = "Stan/antibody_sero_siis.stan",
+    data = sero_sr_data_EV71,
+    iter_warmup = sero_sr_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_sr_iter_warmup,
+    chains = sero_chains,
+    parallel_chains = sero_parallel,
+    adapt_delta = sero_sr_adapt_delta,
+    seed = sero_seed,
+    refresh = sero_refresh
+  ),
+  
+  tar_target(
+    sero_sr_data_EV68,
+    add_sero_switches(
+      sero_stan_data_EV68,
+      estimate_omega = 1L,
+      omega_prior_sd = sero_omega_prior_sd
+    )
+  ),
+  
+  tar_stan_mcmc( # SIS:
+    name = "EV68_sr",
+    stan_files = "Stan/antibody_sero_sis.stan",
+    data = sero_sr_data_EV68,
+    iter_warmup = sero_sr_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_sr_iter_warmup,
+    chains = sero_chains,
+    parallel_chains = sero_parallel,
+    adapt_delta = sero_sr_adapt_delta,
+    seed = sero_seed,
+    refresh = sero_refresh
+  ),
+  
+  tar_stan_mcmc( # SIIS
+    name = "EV68_sr_3",
+    stan_files = "Stan/antibody_sero_siis.stan",
+    data = sero_sr_data_EV68,
+    iter_warmup = sero_sr_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_sr_iter_warmup,
+    chains = sero_chains,
+    parallel_chains = sero_parallel,
+    adapt_delta = sero_sr_adapt_delta,
+    seed = sero_seed,
+    refresh = sero_refresh
+  ),
+  
+  # LOO-CV across SI/SII/SIS/SIIS models
+  tar_target(
+    CVA6_model_loo,
+    compare_sero_models_loo(
+      list(
+        SI   = CVA6_two_comp_draws_antibody_sero_two_compartment,
+        SII  = CVA6_draws_antibody_sero,
+        SIS  = CVA6_sr_draws_antibody_sero_sis,
+        SIIS = CVA6_sr_3_draws_antibody_sero_siis
+      ),
+      virus = "CVA6"
+    )
+  ),
+  
+  tar_target(
+    EV71_model_loo,
+    compare_sero_models_loo(
+      list(
+        SI   = EV71_two_comp_draws_antibody_sero_two_compartment,
+        SII  = EV71_draws_antibody_sero,
+        SIS  = EV71_sr_draws_antibody_sero_sis,
+        SIIS = EV71_sr_3_draws_antibody_sero_siis
+      ),
+      virus = "EV71"
+    )
+  ),
+  
+  tar_target(
+    EV68_model_loo,
+    compare_sero_models_loo(
+      list(
+        SI   = EV68_draws_antibody_sero_two_compartment,   # note: no _two_comp prefix
+        SII  = EV68_three_comp_draws_antibody_sero,
+        SIS  = EV68_sr_draws_antibody_sero_sis,
+        SIIS = EV68_sr_3_draws_antibody_sero_siis
+      ),
+      virus = "EV68"
+    )
+  ),
+  
+  tar_target(
+    combined_model_loo_df,
+    combine_model_loo_tables(CVA6_model_loo, EV71_model_loo, EV68_model_loo)
+  ),
+  
+  #### k0 sensitivity analysis ####
+  k0_targets
 )

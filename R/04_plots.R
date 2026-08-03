@@ -360,7 +360,7 @@ simulate_serodynamics <- function(lambda_long, psi, age_max) {
   S[1] <- 1; I[1] <- 0; R[1] <- 0
   
   for (a in 2:age_max) {
-    lam <- lambda_long[a]
+    lam <- lambda_long[a] # lam <- lambda_long[a-1]
     oldS <- S[a - 1]
     oldI <- I[a - 1]
     
