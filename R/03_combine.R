@@ -5,8 +5,12 @@ library(reshape2)
 
 combine_draws_three_viruses <- function(draws_ev71, draws_cva6, draws_ev68) {
   
-  vars_3state <- c("mu[1]","mu[2]","mu[3]","sigma","psi","lambda_1","beta")
-  vars_2state <- c("mu[1]","mu[2]",        "sigma",      "lambda_1","beta")
+  vars_3state <- c("mu[1]","mu[2]","mu[3]",
+                   "sigma_phi[1]","sigma_phi[2]","sigma_phi[3]",
+                   "psi","lambda_1","beta")
+  vars_2state <- c("mu[1]","mu[2]",
+                   "sigma_phi[1]","sigma_phi[2]",
+                   "lambda_1","beta")
   
   ev71 <- draws_ev71 %>% dplyr::select(any_of(vars_3state)) %>% mutate(Virus="EV71")
   cva6 <- draws_cva6 %>% dplyr::select(any_of(vars_3state)) %>% mutate(Virus="CVA6")

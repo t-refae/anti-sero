@@ -36,14 +36,20 @@ data {
   // antibody posterior draws (log scale)
   int<lower=1> n_phi_draws;
   matrix[n_phi_draws, n] log_phi_draws;
+  
+  int<lower=0, upper=1> sigma_by_state;
+}
+
+transformed data {
+  int n_sigma = sigma_by_state ? 3 : 1;
 }
 
 parameters {
   ordered[3] mu;
-  real<lower=0> sigma;
+  vector<lower=0>[n_sigma] sigma_phi;
   real<lower=1e-5> psi;
   real<lower=0> lambda_1;
-  real<lower=0> beta;
+  real<lower=0> kappa;
 }
 
 transformed parameters {
@@ -53,9 +59,16 @@ transformed parameters {
   mu_x[2] = mu[3];
   mu_x[3] = mu[2];
 
+  vector[3] sigma_x;
+  if(sigma_by_state) {
+    sigma_x = sigma_phi;
+  } else {
+    sigma_x = rep_vector(sigma_phi[1], 3);
+  }
+  
   vector[age_max] lambda_long;
   for(i in 1:age_max) {
-    lambda_long[i] = lambda_1 * exp(-beta * (i - 1));
+    lambda_long[i] = lambda_1 * exp(-kappa * (i - 1));
   }
 }
 
@@ -75,7 +88,7 @@ model {
       vector[n_phi_draws] lp_draws;
       for(m in 1:n_phi_draws) {
         // lognormal_lpdf(exp(logphi)|mu,sigma) = normal_lpdf(logphi|mu,sigma) - logphi
-        lp_draws[m] = normal_lpdf(log_phi_draws[m, i] | mu_x[j], sigma) - log_phi_draws[m, i];
+        lp_draws[m] = normal_lpdf(log_phi_draws[m, i] | mu_x[j], sigma_x[j]) - log_phi_draws[m, i];
       }
       real log_avg = log_sum_exp(lp_draws) - log(n_phi_draws);
       lp_state[j] = log_prob_by_group[i, j] + log_avg;
@@ -86,9 +99,9 @@ model {
 
   // priors
   mu ~ normal(0, 5);
-  sigma ~ normal(0, 1);
+  sigma_phi ~ normal(0, 1);
   lambda_1 ~ normal(0, 1);
-  beta ~ normal(0, 1);
+  kappa ~ normal(0, 1);
   psi ~ normal(0, 0.5);
 }
 
@@ -110,7 +123,7 @@ generated quantities {
       for(j in 1:3) {
         vector[n_phi_draws] lp_draws;
         for(m in 1:n_phi_draws) {
-          lp_draws[m] = normal_lpdf(log_phi_draws[m, i] | mu_x[j], sigma) - log_phi_draws[m, i];
+          lp_draws[m] = normal_lpdf(log_phi_draws[m, i] | mu_x[j], sigma_x[j]) - log_phi_draws[m, i];
         }
         real log_avg = log_sum_exp(lp_draws) - log(n_phi_draws);
         lp_state[j] = log_prob_by_group[i, j] + log_avg;

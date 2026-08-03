@@ -76,7 +76,7 @@ extract_log_phi_draws <- function(draws_obj, n_individuals, thin_to = 500, seed 
 }
 
 # stan data for serocatalytic model
-make_sero_stan_data <- function(serum_meta, log_phi_draws) {
+make_sero_stan_data <- function(serum_meta, log_phi_draws, sigma_by_state = 1L) {
   stopifnot(ncol(log_phi_draws) == nrow(serum_meta))
   
   ages <- as.integer(round(serum_meta$age))
@@ -87,7 +87,8 @@ make_sero_stan_data <- function(serum_meta, log_phi_draws) {
     ages = ages,
     age_max = as.integer(age_max),
     n_phi_draws = as.integer(nrow(log_phi_draws)),
-    log_phi_draws = log_phi_draws
+    log_phi_draws = log_phi_draws,
+    sigma_by_state = as.integer(sigma_by_state)
   )
 }
 

@@ -166,17 +166,22 @@ plot_foi_combined <- function(draws_combined_melt, max_age = 92) {
 }
 
 plot_param_densities_combined <- function(draws_combined_melt) {
-  keep <- c("mu[1]", "mu[2]", "mu[3]", "sigma", "psi", "lambda_1", "beta")
-  dd <- draws_combined_melt %>% filter(variable %in% keep) %>% filter(!(variable == "beta" & value>0.8))
+  keep <- c("mu_x[1]", "mu_x[2]", "mu_x[3]",
+            "sigma_phi[1]", "sigma_phi[2]", "sigma_phi[3]",
+            "psi", "lambda_1", "kappa")
+  dd <- draws_combined_melt %>% filter(variable %in% keep) %>%
+    filter(!(variable == "kappa" & value > 0.8))
   
   var_labs <- c(
-    "mu[1]" = "mu[S]",
-    "mu[2]" = "mu[I[\"++\"]]",
-    "mu[3]" = "mu[I[\"+\"]]",
-    "sigma" = "sigma",
-    "psi" = "psi",
-    "lambda_1" = "lambda[1]",
-    "beta" = "kappa"
+    "mu_x[1]"        = "mu[S]",
+    "mu_x[2]"        = "mu[I[\"++\"]]",
+    "mu_x[3]"        = "mu[I[\"+\"]]",
+    "sigma_phi[1]" = "sigma[phi][S]",
+    "sigma_phi[2]" = "sigma[phi][I[\"++\"]]",
+    "sigma_phi[3]" = "sigma[phi][I[\"+\"]]",
+    "psi"          = "psi",
+    "lambda_1"     = "lambda[1]",
+    "kappa"         = "kappa"
   )
   
   dd$Virus <- factor(dd$Virus, levels = c("CVA6", "EV71", "EV68"))
@@ -210,42 +215,34 @@ make_param_table <- function(virus, summary_df) {
   n_states <- detect_n_states(summary_df)
   
   if (n_states == 3) {
-    vars <- c("mu[1]", "mu[3]", "mu[2]", "sigma", "psi", "lambda_1", "beta")
+    vars <- c("mu_x[1]", "mu_x[2]", "mu_x[3]",
+              "sigma_phi[1]", "sigma_phi[2]", "sigma_phi[3]",
+              "psi", "lambda_1", "kappa")
     recode_map <- c(
-      "mu[1]" = "\\mu_{S}",
-      "mu[3]" = "\\mu_{I_{++}}",
-      "mu[2]" = "\\mu_{I_{+}}",
-      "sigma" = "\\sigma",
-      "psi" = "\\psi",
-      "lambda_1" = "\\lambda_{1}",
-      "beta" = "\\kappa"
-    )
-    desired_order <- c(
-      "\\mu_{S}",
-      "\\mu_{I_{++}}",
-      "\\mu_{I_{+}}",
-      "\\sigma",
-      "\\psi",
-      "\\lambda_{1}",
-      "\\kappa"
+      "mu_x[1]"        = "\\mu_{S}",
+      "mu_x[2]"        = "\\mu_{I_{++}}",
+      "mu_x[3]"        = "\\mu_{I_{+}}",
+      "sigma_phi[1]" = "\\sigma_{\\phi,S}",
+      "sigma_phi[2]" = "\\sigma_{\\phi,I_{++}}",
+      "sigma_phi[3]" = "\\sigma_{\\phi,I_{+}}",
+      "psi"          = "\\psi",
+      "lambda_1"     = "\\lambda_{1}",
+      "kappa"         = "\\kappa"
     )
   } else {
-    vars <- c("mu[1]", "mu[2]", "sigma", "lambda_1", "beta")
+    vars <- c("mu[1]", "mu[2]",
+              "sigma_phi[1]", "sigma_phi[2]",
+              "lambda_1", "kappa")
     recode_map <- c(
-      "mu[1]" = "\\mu_{S}",
-      "mu[2]" = "\\mu_{I_{++}}",
-      "sigma" = "\\sigma",
-      "lambda_1" = "\\lambda_{1}",
-      "beta" = "\\kappa"
-    )
-    desired_order <- c(
-      "\\mu_{S}",
-      "\\mu_{I_{++}}",
-      "\\sigma",
-      "\\lambda_{1}",
-      "\\kappa"
+      "mu[1]"        = "\\mu_{S}",
+      "mu[2]"        = "\\mu_{I_{++}}",
+      "sigma_phi[1]" = "\\sigma_{\\phi,S}",
+      "sigma_phi[2]" = "\\sigma_{\\phi,I_{++}}",
+      "lambda_1"     = "\\lambda_{1}",
+      "kappa"         = "\\kappa"
     )
   }
+  desired_order <- unname(recode_map[vars])
   
   
   tab <- summary_df %>%
@@ -427,14 +424,15 @@ plot_weighted_avg_phi <- function(
     pull(mean)
   
   sigma <- summary_df %>%
-    filter(variable == "sigma") %>%
+    filter(grepl("^sigma_phi\\[", variable) | variable == "sigma") %>%
+    arrange(variable) %>%
     pull(mean)
   
-  phi_state <- exp(mu_x + 0.5 * sigma^2)
-  
-  if (n_states == 2) {
-    phi_state <- c(phi_state, 0)
-  }
+  # phi_state <- exp(mu_x + 0.5 * sigma^2)
+  # 
+  # if (n_states == 2) {
+  #   phi_state <- c(phi_state, 0)
+  # }
   
   set.seed(seed)
   idx <- sample.int(nrow(draws_df), size = min(n_samples, nrow(draws_df)))

@@ -3,13 +3,17 @@
 add_sero_switches <- function(stan_data,
                               estimate_omega = 1L,
                               omega_fixed    = 0,
-                              omega_prior_sd = 0.1,
-                              sigma_by_state = 0L,
+                              omega_prior_sd = 0.5,
+                              sigma_by_state = 1L,
                               foi_piecewise  = 0L,
                               bracket_cuts   = c(0, 5, 10, 20, 40)) {
   
   need <- c("n", "age_max", "ages", "n_phi_draws", "log_phi_draws")
   stopifnot(all(need %in% names(stan_data)))
+  
+  if (missing(sigma_by_state) && !is.null(stan_data$sigma_by_state)) {
+    sigma_by_state <- stan_data$sigma_by_state
+  }
   
   n  <- stan_data$n
   M  <- stan_data$n_phi_draws
@@ -546,26 +550,444 @@ plot_k0_ridge <- function(fit_free, virus = "CVA6") {
 
 #### mean vs median phi (clarifying plots) ####
 
-## mixture median of phi at a given age
-##
-## solve sum_x w_x Phi((log m - mu_x)/sigma) = 0.5
-
 mixture_phi_median <- function(w, mu_x, sigma) {
-  w <- w[seq_along(mu_x)]
-  if (sum(w) <= 0) return(NA_real_)
+  k  <- length(mu_x)
+  sg <- if (length(sigma) == 1L) rep(sigma, k) else sigma[seq_len(k)]
+  w  <- w[seq_len(k)]
+  if (sum(w) <= 0 || anyNA(w)) return(NA_real_)
   w <- w / sum(w)
-  f <- function(z) sum(w * stats::pnorm((z - mu_x) / sigma)) - 0.5
-  exp(stats::uniroot(f, lower = min(mu_x) - 6 * sigma,
-                     upper = max(mu_x) + 6 * sigma)$root)
+  f <- function(z) sum(w * stats::pnorm((z - mu_x) / sg)) - 0.5
+  exp(stats::uniroot(f, lower = min(mu_x) - 8 * max(sg),
+                     upper = max(mu_x) + 8 * max(sg))$root)
 }
 
-#' Mean and median of the fitted mixture at every age
 mixture_phi_summaries <- function(probs_age, mu_x, sigma) {
-  k <- length(mu_x)
-  P <- probs_age[, seq_len(k), drop = FALSE]
+  k  <- length(mu_x)
+  sg <- if (length(sigma) == 1L) rep(sigma, k) else sigma[seq_len(k)]
+  P  <- probs_age[, seq_len(k), drop = FALSE]
+  P  <- P / rowSums(P)
   data.frame(
     Age    = seq_len(nrow(P)) - 1L,
-    mean   = as.numeric(P %*% exp(mu_x + 0.5 * sigma^2)),
+    mean   = as.numeric(P %*% exp(mu_x + 0.5 * sg^2)),
     median = apply(P, 1, mixture_phi_median, mu_x = mu_x, sigma = sigma)
   )
+}
+
+#### seroreversion plots ####
+
+# recreates figs 4/5/6 for SIS/SIIS fits
+
+sr_model_label <- function(model) {
+  switch(toupper(model),
+         SIS  = "SIS",
+         SIIS = "SIIS",
+         toupper(model))
+}
+
+sr_title <- function(virus, model) {
+  paste0(pretty_virus(virus), " (", sr_model_label(model), ")")
+}
+
+sr_get_draw <- function(draws_df, name) {
+  cand <- c(name, paste0(name, "[1]"))
+  hit  <- cand[cand %in% names(draws_df)]
+  if (!length(hit)) return(NULL)
+  as.numeric(draws_df[[hit[1]]])
+}
+
+sr_get_summary <- function(summary_df, name) {
+  cand <- c(name, paste0(name, "[1]"))
+  out  <- summary_df %>% filter(variable %in% cand) %>% pull(mean)
+  if (!length(out)) NULL else out[1]
+}
+
+sr_n_states <- function(draws_df) {
+  if ("mu[3]" %in% names(draws_df) || "mu_x[3]" %in% names(draws_df)) 3L else 2L
+}
+
+sr_state_prob_mats <- function(draws_df, age_max, n_states) {
+  lapply(seq_len(n_states), function(j) {
+    cols <- paste0("state_probs[", seq_len(age_max + 1L), ",", j, "]")
+    miss <- setdiff(cols, names(draws_df))
+    if (length(miss)) {
+      stop("state_probs missing from draws (", length(miss), " columns, e.g. ",
+           miss[1], "). Was the fit run with the revised SIS/SIIS Stan file?")
+    }
+    as.matrix(draws_df[, cols, drop = FALSE])
+  }) %>% setNames(serostate_levels[seq_len(n_states)])
+}
+
+sr_mean_probs <- function(prob_mats) {
+  P <- vapply(prob_mats, colMeans, numeric(ncol(prob_mats[[1]])))
+  if (ncol(P) == 2L) P <- cbind(P, Ip = 0)
+  colnames(P) <- serostate_levels
+  P
+}
+
+sr_mixture_summaries <- function(probs_age, mu_x, sigma) {
+  k  <- length(mu_x)
+  sg <- if (length(sigma) == 1L) rep(sigma, k) else sigma[seq_len(k)]
+  P  <- probs_age[, seq_len(k), drop = FALSE]
+  P  <- P / rowSums(P)
+  
+  med <- apply(P, 1, function(w) {
+    if (any(is.na(w))) return(NA_real_)
+    f <- function(z) sum(w * stats::pnorm((z - mu_x) / sg)) - 0.5
+    exp(stats::uniroot(f,
+                       lower = min(mu_x) - 8 * max(sg),
+                       upper = max(mu_x) + 8 * max(sg))$root)
+  })
+  
+  data.frame(
+    Age    = seq_len(nrow(P)) - 1L,
+    mean   = as.numeric(P %*% exp(mu_x + 0.5 * sg^2)),
+    median = med
+  )
+}
+
+
+## fig 4
+
+plot_sr_weighted_avg_phi <- function(virus, model, plot_data,
+                                     draws_df, summary_df,
+                                     seed = 1, eps = 0.95) {
+  
+  n_states <- sr_n_states(draws_df)
+  age_max  <- plot_data$age_max
+  n        <- length(plot_data$phi_median)
+  
+  prob_mat <- extract_prob_matrix(summary_df, n = n, k = n_states)
+  
+  set.seed(seed)
+  state <- integer(n); below <- logical(n)
+  for (i in seq_len(n)) {
+    p <- prob_mat[i, ]; p[is.na(p)] <- 0; p <- p / sum(p)
+    state[i] <- sample.int(n_states, 1, prob = p)
+    below[i] <- (p[state[i]] < eps)
+  }
+  
+  pts <- data.frame(
+    age   = plot_data$ages,
+    phi   = plot_data$phi_median,
+    state = factor(serostate_levels[state], levels = serostate_levels),
+    conf  = ifelse(below, "<95%", ">95%")
+  )
+  
+  mu_x <- summary_df %>%
+    filter(grepl("^mu_x\\[", variable)) %>%
+    arrange(variable) %>% pull(mean)
+  
+  sigma <- summary_df %>%
+    filter(grepl("^sigma_phi\\[", variable) | variable == "sigma") %>%
+    arrange(variable) %>% pull(mean)
+  
+  probs_age <- sr_mean_probs(sr_state_prob_mats(draws_df, age_max, n_states))
+  
+  line_df <- sr_mixture_summaries(probs_age, mu_x, sigma) %>%
+    tidyr::pivot_longer(c(mean, median),
+                        names_to = "Summary", values_to = "phi") %>%
+    mutate(Summary = factor(Summary, c("mean", "median"), c("Mean", "Median")))
+  
+  ggplot() +
+    geom_point(data = pts, aes(x = age, y = phi, color = state, shape = conf),
+               alpha = 0.85, show.legend = TRUE) +
+    geom_line(data = line_df, aes(x = Age, y = phi, linetype = Summary),
+              linewidth = 1.2) +
+    scale_linetype_manual(values = c(Mean = "solid", Median = "dashed")) +
+    scale_y_log10(breaks = c(10, 30, 100, 300, 1000, 3000)) +
+    scale_serostate_color(state_names = serostate_levels, drop = FALSE) +
+    scale_shape_manual(values = c(">95%" = 16, "<95%" = 0)) +
+    scale_x_continuous(breaks = seq(0, 90, by = 10), limits = c(0, age_max)) +
+    labs(title = sr_title(virus, model), x = "Age (Years)", y = expression(phi),
+         color = "Serostate", linetype = NULL, shape = "Confidence") +
+    theme_minimal() +
+    theme(
+      legend.position = "bottom",
+      axis.title.x = element_text(size = 16, face = "bold"),
+      axis.title.y = element_text(size = 36, angle = 0, vjust = 0.5, face = "bold"),
+      plot.title   = element_text(size = 16, face = "bold", hjust = 0.5),
+      axis.text.x  = element_text(size = 14),
+      axis.text.y  = element_text(size = 14)
+    ) +
+    guides(shape = "none",
+           color = guide_legend(override.aes = list(size = 7)),
+           linetype = guide_legend(order = 2))
+}
+
+
+## fig 5
+
+plot_sr_serodynamics <- function(virus, model, plot_data, draws_df) {
+  
+  n_states  <- sr_n_states(draws_df)
+  age_max   <- plot_data$age_max
+  prob_mats <- sr_state_prob_mats(draws_df, age_max, n_states)
+  state_names <- serostate_levels[seq_len(n_states)]
+  
+  df_long <- purrr::imap_dfr(prob_mats, function(M, nm) {
+    data.frame(
+      Age   = seq_len(ncol(M)) - 1L,
+      State = nm,
+      mean  = colMeans(M),
+      lo    = apply(M, 2, stats::quantile, 0.025),
+      hi    = apply(M, 2, stats::quantile, 0.975)
+    )
+  }) %>%
+    mutate(State = factor(State, levels = state_names))
+  
+  legend_df <- data.frame(Age = NA_real_, mean = NA_real_,
+                          lo = NA_real_, hi = NA_real_,
+                          State = factor(state_names, levels = state_names))
+  
+  ggplot(df_long, aes(x = Age)) +
+    geom_ribbon(aes(ymin = lo, ymax = hi, fill = State), alpha = 0.18) +
+    geom_line(aes(y = mean, color = State), linewidth = 1.3) +
+    geom_ribbon(data = legend_df, aes(ymin = lo, ymax = hi, fill = State),
+                alpha = 0.18, show.legend = TRUE, na.rm = TRUE) +
+    geom_line(data = legend_df, aes(y = mean, color = State),
+              linewidth = 1.3, show.legend = TRUE, na.rm = TRUE) +
+    scale_serostate_color(state_names = state_names,
+                          limits = state_names, drop = FALSE) +
+    scale_serostate_fill(state_names = state_names,
+                         limits = state_names, drop = FALSE) +
+    scale_x_continuous(breaks = seq(0, 90, by = 10), limits = c(0, age_max)) +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(title = sr_title(virus, model), x = "Age (Years)", y = "Proportion",
+         color = "Serostate", fill = "Serostate") +
+    theme_minimal() +
+    theme(
+      legend.position = "right",
+      plot.title   = element_text(size = 16, face = "bold", hjust = 0.5),
+      axis.title.x = element_text(size = 16, face = "bold"),
+      axis.title.y = element_text(size = 16, face = "bold"),
+      axis.text.x  = element_text(size = 14),
+      axis.text.y  = element_text(size = 14),
+      legend.box = "vertical", legend.direction = "vertical",
+      legend.title = element_text(size = 14, face = "bold"),
+      legend.text  = element_text(size = 14),
+      legend.key.height = grid::unit(1, "cm"),
+      legend.key.width  = grid::unit(2, "cm")
+    ) +
+    guides(color = guide_legend(override.aes = list(linewidth = 2)))
+}
+
+
+## fig 6
+
+plot_sr_foi_new_old <- function(virus, model, plot_data, draws_df,
+                                old_age_offset = 1) {
+  
+  age_max <- plot_data$age_max
+  lam_cols <- paste0("lambda_long[", seq_len(age_max), "]")
+  stopifnot(all(lam_cols %in% names(draws_df)))
+  FOI_mat <- as.matrix(draws_df[, lam_cols, drop = FALSE])   # draws x age_max
+  
+  new_df <- data.frame(
+    Age  = seq_len(age_max),
+    mean = colMeans(FOI_mat),
+    q5   = apply(FOI_mat, 2, stats::quantile, 0.05),
+    q95  = apply(FOI_mat, 2, stats::quantile, 0.95)
+  )
+  
+  old_fit  <- readRDS(file.path("data", "processed",
+                                paste0(virus, "_model5_fit.rds")))
+  old_post <- rstan::extract(old_fit, pars = c("lambda", "beta"))
+  age_seq  <- seq_len(age_max)
+  
+  old_FOI_mat <- vapply(
+    seq_along(old_post$beta),
+    function(i) old_post$lambda[i] *
+      exp(-old_post$beta[i] * (age_seq - old_age_offset)),
+    numeric(length(age_seq))
+  )
+  
+  old_df <- data.frame(
+    Age  = age_seq,
+    mean = rowMeans(old_FOI_mat),
+    q5   = matrixStats::rowQuantiles(old_FOI_mat, probs = 0.05),
+    q95  = matrixStats::rowQuantiles(old_FOI_mat, probs = 0.95)
+  )
+  
+  virus_col <- virus_cols[[virus]]
+  
+  ggplot() +
+    geom_ribbon(data = new_df, aes(x = Age, ymin = q5, ymax = q95, fill = "New"),
+                alpha = 0.3) +
+    geom_line(data = new_df, aes(x = Age, y = mean, color = "New"),
+              linewidth = 1.5) +
+    geom_ribbon(data = old_df, aes(x = Age, ymin = q5, ymax = q95, fill = "Old"),
+                alpha = 0.3) +
+    geom_line(data = old_df, aes(x = Age, y = mean, color = "Old"),
+              linewidth = 1.5) +
+    labs(title = sr_title(virus, model), x = "Age (Years)",
+         y = "Force of Infection",
+         color = "Force of Infection", fill = "Force of Infection") +
+    scale_x_log10() +
+    scale_y_continuous(breaks = seq(0, 0.6, by = 0.2), limits = c(0, 0.66)) +
+    scale_color_manual(values = c(New = virus_col, Old = "grey80")) +
+    scale_fill_manual(values  = c(New = virus_col, Old = "grey80")) +
+    theme_minimal() +
+    theme(
+      plot.title   = element_text(hjust = 0.5, size = 20, face = "bold"),
+      axis.title   = element_text(size = 16, face = "bold"),
+      axis.text    = element_text(size = 12),
+      legend.title = element_text(size = 18, face = "bold"),
+      legend.text  = element_text(size = 16),
+      legend.position = "right",
+      legend.key.width = grid::unit(3, "cm")
+    ) +
+    guides(color = guide_legend(override.aes = list(linewidth = 1.5)))
+}
+
+
+plot_sr_omega <- function(virus, model, draws_df, omega_prior_sd = 0.1,
+                          n_prior = 4000, seed = 1) {
+  
+  om <- sr_get_draw(draws_df, "omega")
+  if (is.null(om) || stats::sd(om) < 1e-12) {
+    return(ggplot() + theme_void() +
+             labs(title = paste0(sr_title(virus, model), ": omega fixed")))
+  }
+  
+  set.seed(seed)
+  d <- bind_rows(
+    data.frame(omega = om, dist = "Posterior"),
+    data.frame(omega = abs(stats::rnorm(n_prior, 0, omega_prior_sd)),
+               dist = "Prior")
+  )
+  
+  hl <- stats::median(om)
+  hl <- if (hl > 0) log(2) / hl else NA_real_
+  
+  ggplot(d, aes(x = omega, fill = dist)) +
+    annotate("rect", xmin = 0, xmax = log(2) / 20,
+             ymin = -Inf, ymax = Inf, alpha = 0.15, fill = "grey40") +
+    geom_density(alpha = 0.45, colour = NA) +
+    scale_fill_manual(values = c(Prior = "grey60", Posterior = virus_cols[[virus]])) +
+    labs(
+      title = sr_title(virus, model),
+      subtitle = paste0(
+        "Shaded: seroreversion half-life > 20 years.  ",
+        "Posterior median half-life = ", sprintf("%.1f", hl), " years"),
+      x = expression(omega~"(per year)"), y = "Density", fill = NULL
+    ) +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+          legend.position = "bottom")
+}
+
+
+## table S2
+
+make_sr_param_table <- function(virus, model, summary_df) {
+  
+  n_states <- if (any(grepl("^mu_x\\[3\\]", summary_df$variable))) 3L else 2L
+  
+  recode_map <- c(
+    "mu_x[1]"      = "\\mu_{S}",
+    "mu_x[2]"      = "\\mu_{I_{++}}",
+    "mu_x[3]"      = "\\mu_{I_{+}}",
+    "sigma_phi[1]" = "\\sigma_{\\phi,S}",
+    "sigma_phi[2]" = "\\sigma_{\\phi,I_{++}}",
+    "sigma_phi[3]" = "\\sigma_{\\phi,I_{+}}",
+    "psi"          = "\\psi",
+    "omega"        = "\\omega",
+    "lambda_1[1]"  = "\\lambda_{1}",
+    "kappa[1]"     = "\\kappa"
+  )
+  
+  vars <- c("mu_x[1]", "mu_x[2]", if (n_states == 3) "mu_x[3]",
+            "sigma_phi[1]", "sigma_phi[2]", if (n_states == 3) "sigma_phi[3]",
+            if (n_states == 3) "psi",
+            "omega", "lambda_1[1]", "kappa[1]")
+  vars <- vars[vars %in% summary_df$variable]
+  
+  tab <- summary_df %>%
+    filter(variable %in% vars) %>%
+    select(variable, mean, median, sd, q5, q95, rhat, ess_bulk, ess_tail) %>%
+    mutate(variable = recode(variable, !!!recode_map))
+  
+  tab$variable <- factor(tab$variable, levels = recode_map[vars])
+  tab <- tab %>% arrange(variable)
+  tab$variable <- paste0("$", tab$variable, "$")
+  
+  gt::gt(tab) %>%
+    gt::tab_header(title = paste0(sr_title(virus, model),
+                                  ": Summary Statistics of Fitted Parameters")) %>%
+    gt::fmt_number(columns = c(mean, median, sd, q5, q95), decimals = 3) %>%
+    gt::fmt_number(columns = rhat, decimals = 3) %>%
+    gt::fmt_number(columns = c(ess_bulk, ess_tail), decimals = 0) %>%
+    gt::fmt_markdown(columns = variable) %>%
+    gt::cols_label(variable = "VARIABLE", mean = "MEAN", median = "MEDIAN",
+                   sd = "SD", q5 = "Q5", q95 = "Q95", rhat = "RHAT",
+                   ess_bulk = "ESS_BULK", ess_tail = "ESS_TAIL")
+}
+
+
+sr_panel <- function(what, virus, model, plot_data, draws_df, summary_df,
+                     omega_prior_sd = 0.1) {
+  switch(what,
+         weighted_avg_phi = plot_sr_weighted_avg_phi(virus, model, plot_data,
+                                                     draws_df, summary_df),
+         serodynamics     = plot_sr_serodynamics(virus, model, plot_data, draws_df),
+         FOI_new_old      = plot_sr_foi_new_old(virus, model, plot_data, draws_df),
+         omega            = plot_sr_omega(virus, model, draws_df, omega_prior_sd),
+         stop("unknown panel type: ", what)
+  )
+}
+
+save_sr_combined <- function(what, model,
+                             pd_cva6, dr_cva6, sm_cva6,
+                             pd_ev71, dr_ev71, sm_ev71,
+                             pd_ev68, dr_ev68, sm_ev68,
+                             dir = "outputs/seroreversion",
+                             omega_prior_sd = 0.1) {
+  
+  p_cva6 <- sr_panel(what, "CVA6", model, pd_cva6, dr_cva6, sm_cva6, omega_prior_sd)
+  p_ev71 <- sr_panel(what, "EV71", model, pd_ev71, dr_ev71, sm_ev71, omega_prior_sd)
+  p_ev68 <- sr_panel(what, "EV68", model, pd_ev68, dr_ev68, sm_ev68, omega_prior_sd)
+  
+  grid <- switch(what,
+                 FOI_new_old      = plot_patchwork(p_cva6, p_ev71, p_ev68, FOI = TRUE),
+                 weighted_avg_phi = plot_patchwork(p_cva6, p_ev71, p_ev68),
+                 plot_patchwork(p_cva6, p_ev71, p_ev68, lines = FALSE)
+  )
+  
+  dims <- if (identical(what, "omega")) c(12, 8) else c(12, 10)
+  
+  ensure_dir(dir)
+  out <- file.path(dir, paste0("combined_", tolower(sr_model_label(model)),
+                               "_", what, ".pdf"))
+  save_plot_pdf(grid, out, dims[1], dims[2])
+  out
+}
+
+save_sr_param_tables <- function(specs,
+                                 dir  = "outputs/seroreversion",
+                                 file = "combined_seroreversion_parameter_tables.pdf") {
+  ensure_dir(dir)
+  tmp <- file.path(tempdir(), "sr_tables")
+  ensure_dir(tmp)
+  
+  paths <- vapply(specs, function(s) {
+    save_gt_pdf(
+      make_sr_param_table(s$virus, s$model, s$summary),
+      file.path(tmp, paste0(s$virus, "_", tolower(s$model), "_param_table.pdf"))
+    )
+  }, character(1))
+  
+  out <- file.path(dir, file)
+  combine_pdfs(paths, out)
+  unlink(paths)
+  out
+}
+
+
+#### vectorised sigma (serostate-specific) ####
+
+serostate_reclassification <- function(summary_a, summary_b, n, k) {
+  modal <- function(s) apply(extract_prob_matrix(s, n = n, k = k), 1, which.max)
+  a <- modal(summary_a); b <- modal(summary_b)
+  list(prop_changed = mean(a != b, na.rm = TRUE),
+       table = table(shared = a, by_state = b))
 }

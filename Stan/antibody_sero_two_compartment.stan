@@ -26,22 +26,35 @@ data {
 
   int<lower=1> n_phi_draws;
   matrix[n_phi_draws, n] log_phi_draws;
+  
+  int<lower=0, upper=1> sigma_by_state;
+}
+
+transformed data {
+  int n_sigma = sigma_by_state ? 2 : 1;
 }
 
 parameters {
   ordered[2] mu;
-  real<lower=0> sigma;
+  vector<lower=0>[n_sigma] sigma_phi;
   real<lower=0> lambda_1;
-  real<lower=0> beta;
+  real<lower=0> kappa;
 }
 
 transformed parameters {
   vector[2] mu_x;
   mu_x = mu;
+  
+  vector[2] sigma_x;
+  if (sigma_by_state) {
+    sigma_x = sigma_phi;
+  } else {
+    sigma_x = rep_vector(sigma_phi[1], 2);
+  }
 
   vector[age_max] lambda_long;
   for(i in 1:age_max)
-    lambda_long[i] = lambda_1 * exp(-beta * (i - 1));
+    lambda_long[i] = lambda_1 * exp(-kappa * (i - 1));
 }
 
 model {
@@ -62,7 +75,7 @@ model {
 
       for(m in 1:n_phi_draws)
         lp_draws[m] =
-          normal_lpdf(log_phi_draws[m,i] | mu_x[j], sigma)
+          normal_lpdf(log_phi_draws[m,i] | mu_x[j], sigma_x[j])
           - log_phi_draws[m,i];
 
       real log_avg = log_sum_exp(lp_draws) - log(n_phi_draws);
@@ -74,9 +87,9 @@ model {
   }
 
   mu ~ normal(0,5);
-  sigma ~ normal(0,1);
+  sigma_phi ~ normal(0,1);
   lambda_1 ~ normal(0,1);
-  beta ~ normal(0,1);
+  kappa ~ normal(0,1);
 }
 
 generated quantities {
@@ -94,7 +107,7 @@ generated quantities {
 
       for(m in 1:n_phi_draws)
         lp_draws[m] =
-          normal_lpdf(log_phi_draws[m,i] | mu_x[j], sigma)
+          normal_lpdf(log_phi_draws[m,i] | mu_x[j], sigma_x[j])
           - log_phi_draws[m,i];
 
       real log_avg = log_sum_exp(lp_draws) - log(n_phi_draws);
