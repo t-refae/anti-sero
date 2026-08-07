@@ -93,10 +93,12 @@ sero_vars <- list(
 # load all functions in R/ directory
 tar_source()
 source("k0_pipeline.R")
+source("phi_k1_prior_pipeline.R")
 
 # compile .stan files
 invisible(lapply(
   c("Stan/antibody_mech.stan", "Stan/antibody_mech_k0.stan",
+    #"Stan/antibody_mech_phi_k1.stan",
     "Stan/antibody_sero.stan", "Stan/antibody_sero_two_compartment.stan",
     "Stan/antibody_sero_sis.stan", "Stan/antibody_sero_siis.stan"),
   function(f) cmdstanr::cmdstan_model(f, cpp_options = stan_cpp)
@@ -1071,7 +1073,7 @@ list(
     format = "file"
   ),
   
-  #### k0 sensitivity analysis (UNCOMMENT LATER) ####
+  #### k0 sensitivity analysis ####
   
   k0_targets,
   

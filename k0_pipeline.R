@@ -51,7 +51,8 @@ k0_targets <- list(
       k0_sero_data,
       make_sero_stan_data(
         serum_meta    = prep$serum_meta,
-        log_phi_draws = fit$log_phi_draws
+        log_phi_draws = fit$log_phi_draws,
+        sigma_by_state = 0
       )
     ),
     tar_target(
