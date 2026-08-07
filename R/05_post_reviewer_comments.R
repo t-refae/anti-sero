@@ -49,7 +49,8 @@ add_sero_switches <- function(stan_data,
     sigma_by_state = as.integer(sigma_by_state),
     foi_piecewise  = as.integer(foi_piecewise),
     n_brackets     = if (foi_piecewise) length(bracket_cuts) else 0L,
-    bracket_of_age = as.array(bracket_of_age)
+    bracket_of_age = as.array(bracket_of_age),
+    grainsize      = 1L
   )
 }
 
@@ -194,17 +195,6 @@ combine_model_loo_tables <- function(...) {
 ##   C    FOI posterior
 ##
 
-K0_SPECS <- c("-2", "-1", "0", "1", "2", "free")
-K0_IDS   <- c("m2", "m1", "z0", "p1", "p2", "free")
-K0_FIXED <- c("-2", "-1", "0", "1", "2")
-K0_PHI_PRIOR_SCALE <- 500
-K0_PRIOR_SD        <- 5
-
-K0_S2_THIN     <- 500 #NULL #100
-K0_S2_CHAINS   <- 4
-K0_S2_WARMUP   <- 200
-K0_S2_SAMPLING <- 800
-
 
 ## eta = k0 + k1 * (log_phi - log(d)).
 k0_linpred <- function(k0, k1, log_phi, log_dil) {
@@ -225,13 +215,14 @@ K0_FOI_REGEX    <- "^lambda"
 k0_compile <- function(stan_file = "Stan/antibody_mech_k0.stan",
                        dir = "Stan/bin") {
   ensure_dir(dir)
-  cmdstanr::cmdstan_model(stan_file, dir = dir)
+  cmdstanr::cmdstan_model(stan_file, dir = dir, cpp_options = list(stan_threads = TRUE))
 }
 
 fit_k0_stage1 <- function(model, stan_data, spec,
                           keep_log_phi_draws = FALSE, thin_to = NULL,
                           seed = 1, iter_warmup = 500, iter_sampling = 500,
-                          chains = 4, parallel_chains = 4, refresh = 200) {
+                          chains = 4, parallel_chains = 4, refresh = 200,
+                          cpp_options = stan_cpp, threads_per_chain = ab_threads) {
   
   free <- identical(spec, "free")
   zeta <- if (free) 0 else as.numeric(spec)
@@ -245,7 +236,9 @@ fit_k0_stage1 <- function(model, stan_data, spec,
   fit <- model$sample(
     data = stan_data, seed = seed,
     iter_warmup = iter_warmup, iter_sampling = iter_sampling,
-    chains = chains, parallel_chains = parallel_chains, refresh = refresh
+    chains = chains, parallel_chains = parallel_chains, refresh = refresh,
+    # cpp_options = stan_cpp,
+    threads_per_chain = ab_threads
   )
   
   dd <- posterior::as_draws_df(fit$draws())
@@ -280,19 +273,23 @@ fit_k0_stage1 <- function(model, stan_data, spec,
 
 # returns FOI draws only for now
 fit_k0_stage2 <- function(sero_stan_file, sero_stan_data, spec,
-                          dir = "Stan/bin", seed = 2,
+                          dir = "Stan/bin", seed = sero_seed,
                           iter_warmup = K0_S2_WARMUP,
                           iter_sampling = K0_S2_SAMPLING,
                           chains = K0_S2_CHAINS, parallel_chains = K0_S2_CHAINS,
-                          refresh = 0) {
+                          refresh = K0_S2_REFRESH, 
+                          # stan_cpp=stan_cpp,
+                          threads_per_chain=sero_threads) {
   
   ensure_dir(dir)
-  model <- cmdstanr::cmdstan_model(sero_stan_file, dir = dir)
+  model <- cmdstanr::cmdstan_model(sero_stan_file, dir = dir, cpp_options = list(stan_threads = TRUE))
   
   fit <- model$sample(
     data = sero_stan_data, seed = seed,
     iter_warmup = iter_warmup, iter_sampling = iter_sampling,
-    chains = chains, parallel_chains = parallel_chains, refresh = refresh
+    chains = chains, parallel_chains = parallel_chains, refresh = refresh,
+    # stan_cpp=stan_cpp,
+    threads_per_chain=sero_threads
   )
   
   vars <- grep(K0_FOI_REGEX, fit$metadata()$stan_variables, value = TRUE)
@@ -941,7 +938,7 @@ save_sr_combined <- function(what, model,
                              pd_ev71, dr_ev71, sm_ev71,
                              pd_ev68, dr_ev68, sm_ev68,
                              dir = "outputs/seroreversion",
-                             omega_prior_sd = 0.1) {
+                             omega_prior_sd = 0.5) {
   
   p_cva6 <- sr_panel(what, "CVA6", model, pd_cva6, dr_cva6, sm_cva6, omega_prior_sd)
   p_ev71 <- sr_panel(what, "EV71", model, pd_ev71, dr_ev71, sm_ev71, omega_prior_sd)
@@ -990,4 +987,206 @@ serostate_reclassification <- function(summary_a, summary_b, n, k) {
   a <- modal(summary_a); b <- modal(summary_b)
   list(prop_changed = mean(a != b, na.rm = TRUE),
        table = table(shared = a, by_state = b))
+}
+
+#### convergence diagnostics ####
+
+#' One row of convergence diagnostics for a single fit.
+sero_convergence_row <- function(summary_df, draws_df, virus, model,
+                                 sigma_spec = "by state", diagnostics = NULL) {
+  
+  key <- summary_df |>
+    dplyr::filter(grepl(
+      "^(mu|mu_x|sigma_phi|sigma_x|sig_x|psi|omega|lambda_1|kappa)(\\[|$)",
+      variable))
+  
+  n_states <- if (any(grepl("^mu_x\\[3\\]", summary_df$variable))) 3L else 2L
+  sg <- grep("^sigma_phi\\[", names(draws_df), value = TRUE)
+  
+  # per-chain minima detect a single stuck chain that pooled minima would hide
+  per_chain <- draws_df |>
+    dplyr::group_by(.chain) |>
+    dplyr::summarise(ms = min(dplyr::across(dplyr::all_of(sg))),
+                     .groups = "drop")
+  
+  om_free <- "omega" %in% names(draws_df) &&
+    stats::sd(draws_df$omega, na.rm = TRUE) > 1e-10
+  
+  tibble::tibble(
+    virus = virus, model = model, n_states = n_states, sigma_spec = sigma_spec,
+    omega = if (om_free) "free" else "fixed",
+    n_chains = length(unique(draws_df$.chain)),
+    n_draws  = nrow(draws_df),
+    max_rhat     = max(key$rhat, na.rm = TRUE),
+    n_rhat_gt101 = sum(key$rhat > 1.01, na.rm = TRUE),
+    min_ess_bulk = min(key$ess_bulk, na.rm = TRUE),
+    min_ess_tail = min(key$ess_tail, na.rm = TRUE),
+    min_sigma          = min(per_chain$ms),
+    n_chains_collapsed = sum(per_chain$ms < 0.2),
+    lp_range = if ("lp__" %in% names(draws_df)) {
+      m <- tapply(draws_df$lp__, draws_df$.chain, mean); max(m) - min(m)
+    } else NA_real_,
+    n_divergent = if (!is.null(diagnostics)) sum(diagnostics$divergent__) else NA_integer_,
+    converged = max(key$rhat, na.rm = TRUE) < 1.01 &
+      min(key$ess_bulk, na.rm = TRUE) > 400
+  )
+}
+
+#' Attribute each failure to sigma collapse, omega non-identification, or both.
+label_convergence_failures <- function(df) {
+  df |>
+    dplyr::mutate(diagnosis = dplyr::case_when(
+      converged                                    ~ "converged",
+      n_chains_collapsed > 0 & omega == "free"     ~ "sigma collapse + omega ridge",
+      n_chains_collapsed > 0                       ~ "sigma collapse",
+      omega == "free"                              ~ "omega ridge",
+      TRUE                                         ~ "other")) |>
+    dplyr::arrange(converged, n_states, virus, model)
+}
+
+make_convergence_table <- function(df) {
+  gt::gt(df |> dplyr::select(virus, model, n_states, sigma_spec, omega,
+                             max_rhat, min_ess_bulk, min_sigma,
+                             n_chains_collapsed, diagnosis)) |>
+    gt::tab_header(title = "Stage 2 convergence diagnostics",
+                   subtitle = "Convergence: R-hat < 1.01 and bulk ESS > 400 on all model parameters") |>
+    gt::fmt_number(columns = c(max_rhat, min_sigma), decimals = 3) |>
+    gt::fmt_number(columns = min_ess_bulk, decimals = 0) |>
+    gt::data_color(columns = diagnosis,
+                   fn = function(x) ifelse(x == "converged", "#d9ead3", "#f4cccc")) |>
+    gt::cols_label(n_states = "STATES", sigma_spec = "SIGMA", omega = "OMEGA",
+                   max_rhat = "MAX RHAT", min_ess_bulk = "MIN ESS",
+                   min_sigma = "MIN SIGMA", n_chains_collapsed = "CHAINS COLLAPSED")
+}
+
+#### stratify results by calendar year ####
+
+# age x year summary
+stationarity_descriptive <- function(serum_meta, log_phi_draws, virus,
+                                     cuts = c(0,1,2,seq(5,95, by=5))) {
+  tibble::tibble(
+    age    = as.integer(round(serum_meta$age)),
+    survey = as.integer(serum_meta$year),
+    phi    = exp(matrixStats::colMedians(log_phi_draws))
+  ) |>
+    dplyr::mutate(band = cut(age, cuts, right = FALSE)) |>
+    dplyr::group_by(band, survey) |>
+    dplyr::summarise(n = dplyr::n(),
+                     median_phi = median(phi),
+                     mean_log_phi = mean(log(phi)),
+                     se = sd(log(phi)) / sqrt(dplyr::n()),
+                     .groups = "drop") |>
+    dplyr::mutate(virus = virus)
+}
+
+plot_stationarity_descriptive <- function(df) {
+  ggplot2::ggplot(df, ggplot2::aes(band, mean_log_phi,
+                                   colour = factor(survey), group = survey)) +
+    ggplot2::geom_pointrange(ggplot2::aes(ymin = mean_log_phi - 1.96 * se,
+                                          ymax = mean_log_phi + 1.96 * se),
+                             position = ggplot2::position_dodge(0.3)) +
+    ggplot2::geom_line(position = ggplot2::position_dodge(0.3)) +
+    ggplot2::facet_wrap(~virus, scales = "free_y") +
+    ggplot2::labs(x = "Age band", y = expression(mean~log~phi), colour = "Survey") +
+    ggplot2::theme_bw()
+}
+
+subset_sero_data_by_year <- function(stan_data, serum_meta, years) {
+  keep <- as.integer(serum_meta$year) %in% years
+  stopifnot(sum(keep) > 50)
+  lp <- stan_data$log_phi_draws
+  stan_data$log_phi_draws <- if (nrow(lp) == stan_data$n_phi_draws) {
+    lp[, keep, drop = FALSE]                      # draws x individuals
+  } else {
+    lp[keep, , drop = FALSE]                      # individuals x draws
+  }
+  stan_data$ages <- stan_data$ages[keep]
+  stan_data$n    <- sum(keep)
+  if (!is.null(stan_data$grainsize)) stan_data$grainsize <- 1L
+  stan_data
+}
+
+strata_contrast <- function(draws_a, draws_b, label_a, label_b,
+                            pars = c("lambda_1", "kappa", "psi"),
+                            n_draw = 4000, seed = 1) {
+  set.seed(seed)
+  pars <- intersect(pars, intersect(names(draws_a), names(draws_b)))
+  purrr::map_dfr(pars, function(p) {
+    a <- as.numeric(draws_a[[p]]); b <- as.numeric(draws_b[[p]])
+    d <- sample(b, n_draw, TRUE) - sample(a, n_draw, TRUE)
+    tibble::tibble(
+      parameter   = p,
+      median_a    = stats::median(a),
+      median_b    = stats::median(b),
+      ratio       = stats::median(b) / stats::median(a),
+      diff_median = stats::median(d),
+      diff_q5     = stats::quantile(d, 0.05),
+      diff_q95    = stats::quantile(d, 0.95),
+      p_increase  = mean(d > 0),
+      stratum_a   = label_a,
+      stratum_b   = label_b
+    )
+  })
+}
+
+strata_contrast_all <- function(draws_list,
+                                pars = c("lambda_1", "kappa", "psi"),
+                                n_draw = 4000, seed = 1) {
+  labs <- names(draws_list)
+  pairs <- c(
+    lapply(seq_len(length(labs) - 1), function(i) c(i, i + 1)),   # adjacent
+    if (length(labs) > 2) list(c(1, length(labs)))                 # first vs last
+  )
+  purrr::map_dfr(pairs, function(ij) {
+    strata_contrast(draws_list[[ij[1]]], draws_list[[ij[2]]],
+                    labs[ij[1]], labs[ij[2]], pars, n_draw, seed)
+  })
+}
+
+#' Posterior probability of a monotone increase across three ordered strata.
+#' A stronger test than pairwise comparisons when each has limited power.
+strata_trend <- function(draws_list, par = "lambda_1", n_draw = 4000, seed = 1) {
+  set.seed(seed)
+  X <- vapply(draws_list, function(d) sample(as.numeric(d[[par]]), n_draw, TRUE),
+              numeric(n_draw))
+  tibble::tibble(
+    parameter        = par,
+    p_monotone_up    = mean(X[, 1] < X[, 2] & X[, 2] < X[, 3]),
+    p_monotone_down  = mean(X[, 1] > X[, 2] & X[, 2] > X[, 3]),
+    p_last_gt_first  = mean(X[, 3] > X[, 1]),
+    ratio_last_first = stats::median(X[, 3]) / stats::median(X[, 1])
+  )
+}
+
+#' Model-implied seropositivity, 1 - S(a), by stratum. This is the quantity
+#' the reviewer's concern is really about.
+strata_seroprev <- function(draws, age_max, label, ages = c(1, 5, 10, 20, 40)) {
+  lam <- as.matrix(draws[, paste0("lambda_long[", seq_len(age_max), "]")])
+  # S(a) = exp(-cumsum(lambda)) for the SI model
+  S <- t(apply(lam, 1, function(x) exp(-cumsum(x))))
+  purrr::map_dfr(ages, function(a) {
+    p <- 1 - S[, a]
+    tibble::tibble(age = a, stratum = label,
+                   median = stats::median(p),
+                   q5 = stats::quantile(p, 0.05),
+                   q95 = stats::quantile(p, 0.95))
+  })
+}
+
+plot_strata_foi <- function(virus, draws_list, age_max) {
+  d <- purrr::imap_dfr(draws_list, function(dr, lab) {
+    M <- as.matrix(dr[, paste0("lambda_long[", seq_len(age_max), "]")])
+    tibble::tibble(Age = seq_len(age_max),
+                   median = matrixStats::colMedians(M),
+                   lo = matrixStats::colQuantiles(M, probs = 0.05),
+                   hi = matrixStats::colQuantiles(M, probs = 0.95),
+                   stratum = lab)
+  })
+  ggplot2::ggplot(d, ggplot2::aes(Age, median, colour = stratum, fill = stratum)) +
+    ggplot2::geom_ribbon(ggplot2::aes(ymin = lo, ymax = hi), alpha = 0.2, colour = NA) +
+    ggplot2::geom_line(linewidth = 1.2) +
+    ggplot2::scale_x_log10() +
+    ggplot2::labs(x = "Age (Years)", y = "Force of Infection", title = virus,
+                  colour = NULL, fill = NULL) +
+    ggplot2::theme_minimal()
 }

@@ -43,7 +43,8 @@ prep_antibody_data <- function(virus, raw_prefix, data_dir = "data/raw") {
     n_dilutions   = length(d_levels),
     n_replicates  = n_reps,
     d             = d_levels,
-    z             = z_mat
+    z             = z_mat,
+    grainsize     = 1L
   )
   
   list(
@@ -88,7 +89,8 @@ make_sero_stan_data <- function(serum_meta, log_phi_draws, sigma_by_state = 1L) 
     age_max = as.integer(age_max),
     n_phi_draws = as.integer(nrow(log_phi_draws)),
     log_phi_draws = log_phi_draws,
-    sigma_by_state = as.integer(sigma_by_state)
+    sigma_by_state = as.integer(sigma_by_state),
+    grainsize = 1L
   )
 }
 
@@ -120,7 +122,8 @@ make_reed_muench_data <- function() {
     n_dilutions = nrow(raw_df),
     n_replicates = 6L,
     d = raw_df$dilutions,
-    z = matrix(raw_df$outcome, nrow = 1)
+    z = matrix(raw_df$outcome, nrow = 1),
+    grainsize = 1L
   )
   
   list(raw_df = raw_df, stan_data = stan_data)

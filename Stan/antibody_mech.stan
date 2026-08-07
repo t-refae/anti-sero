@@ -1,3 +1,16 @@
+functions {
+  real partial_binom(array[] int idx, int start, int end,
+                     vector log_phi, array[,] int z,
+                     int n_replicates, vector log_d, real k1) {
+    real out = 0;
+    for (q in 1:size(idx)) {
+      int i = idx[q];
+      out += binomial_lpmf(z[i] | n_replicates, Phi(k1 * (log_phi[i] - log_d)));
+    }
+    return out;
+  }
+}
+
 data {
   int<lower=1> n_individuals;                       // number of serosurveyed individuals
   int<lower=1> n_dilutions;                         // number of dilutions
@@ -5,7 +18,14 @@ data {
   vector<lower=1>[n_dilutions] d;                   // dilution factor for each observation 
   array[n_individuals, n_dilutions] int<lower=0, upper=n_replicates> z; // survival count at each dilution
   // int k0;
-} 
+  int<lower=1> grainsize;
+}
+
+transformed data {
+  vector[n_dilutions] log_d = log(d);
+  array[n_individuals] int ii;
+  for (i in 1:n_individuals) ii[i] = i;
+}
 
 parameters { 
   // real k0;          // intercept
@@ -22,26 +42,13 @@ transformed parameters {
   log_phi = log(phi);
 }
 
-model { 
-  {
-    array[n_individuals] vector[n_dilutions] eta;
-    for (i in 1:n_individuals) {
-      eta[i] = k1 * (log_phi[i] - log(d));
-    }
-    
-    for (i in 1:n_individuals) {
-      z[i] ~ binomial(n_replicates, Phi(eta[i]));
-    }
-  }
+model {
+  target += reduce_sum(partial_binom, ii, grainsize,
+                       log_phi, z, n_replicates, log_d, k1);
 
-  // k0 ~ cauchy(0,10);
-  
-  // k1 ~ cauchy(0,10); 
-  
-  k1 ~ cauchy(0,1);
-
+  k1  ~ cauchy(0, 1);
   phi ~ cauchy(0, 500);
-} 
+}
 
 generated quantities {
   vector[n_individuals] log_LD50;

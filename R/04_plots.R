@@ -78,16 +78,16 @@ extract_prob_matrix <- function(summary_df, n, k = 3) {
   mat
 }
 
-# FOI plot: "short" from (lambda_1,beta) draws, "long" from lambda_long summary
+# FOI plot: "short" from (lambda_1,kappa) draws, "long" from lambda_long summary
 plot_foi_short_long <- function(virus, plot_data, summary_df, draws_df) {
   max_age <- plot_data$age_max
   age_seq <- 0:(max_age - 1)
   
-  post <- draws_df %>% select(lambda_1, beta)
+  post <- draws_df %>% select(lambda_1, kappa)
   
   FOI_mat <- vapply(
     seq_len(nrow(post)),
-    function(r) post$lambda_1[r] * exp(-post$beta[r] * age_seq),
+    function(r) post$lambda_1[r] * exp(-post$kappa[r] * age_seq),
     numeric(length(age_seq))
   )
   FOI_mat <- t(FOI_mat) # [draw x age]
@@ -129,7 +129,7 @@ plot_foi_combined <- function(draws_combined_melt, max_age = 92) {
   age_seq <- 1:max_age
   
   dm <- draws_combined_melt %>%
-    filter(Virus %in% viruses, variable %in% c("lambda_1", "beta")) %>%
+    filter(Virus %in% viruses, variable %in% c("lambda_1", "kappa")) %>%
     group_by(Virus, variable) %>%
     mutate(draw = row_number()) %>%
     ungroup()
@@ -141,11 +141,11 @@ plot_foi_combined <- function(draws_combined_melt, max_age = 92) {
       values_from = value
     ) %>%
     # defensively coerce away list-cols if they exist
-    mutate(across(c(lambda_1, beta), ~ as.numeric(unlist(.x))))
+    mutate(across(c(lambda_1, kappa), ~ as.numeric(unlist(.x))))
   
   foi_summ <- wide %>%
     tidyr::crossing(Age = age_seq) %>%
-    mutate(FOI = lambda_1 * exp(-beta * Age)) %>%
+    mutate(FOI = lambda_1 * exp(-kappa * Age)) %>%
     group_by(Virus, Age) %>%
     summarise(
       mean = mean(FOI, na.rm = TRUE),
@@ -543,7 +543,8 @@ plot_serodynamics <- function(
     plot_data,
     draws_df,
     n_samples = 300,
-    seed = 1
+    seed = 1,
+    three_comp = TRUE # set to FALSE for SI model
 ) {
   
   age_max <- plot_data$age_max
@@ -605,7 +606,7 @@ plot_serodynamics <- function(
   
   
   # filter out (unmodelled) I+ state for EV68 (but keep legend)
-  if (virus == "EV68") {
+  if (!three_comp) {
     df_long <- df_long %>% dplyr::filter(State != "Ip")
   }
   
@@ -687,73 +688,44 @@ plot_serodynamics <- function(
 
 
 # new vs old FOI comparison
-plot_foi_new_old <- function(
-    virus,
-    plot_data,
-    summary_df,
-    draws_df
-) {
-  max_age <- plot_data$age_max
-  age_seq <- 0:(max_age - 1)
-  
-  post <- draws_df %>% dplyr::select(lambda_1, beta)
-  
-  FOI_mat <- vapply(
-    seq_len(nrow(post)),
-    function(r) post$lambda_1[r] * exp(-post$beta[r] * age_seq),
-    numeric(length(age_seq))
-  )
-  FOI_mat <- t(FOI_mat)
-  
-  new_df <- data.frame(
-    Age = age_seq,
-    mean = colMeans(FOI_mat),
-    q5 = apply(FOI_mat, 2, quantile, 0.05),
-    q95 = apply(FOI_mat, 2, quantile, 0.95)
-  ) %>% dplyr::filter(Age > 0)
-  
-  old_fit <- readRDS(file.path("data", "processed", paste0(virus, "_model5_fit.rds")))
-  
+summarise_old_foi <- function(virus, age_max, old_age_offset = 0) {
+  old_fit  <- readRDS(file.path("data", "processed",
+                                paste0(virus, "_model5_fit.rds")))
   old_post <- rstan::extract(old_fit, pars = c("lambda", "beta"))
+  rm(old_fit); gc()
   
-  old_lambda <- old_post$lambda
-  old_beta   <- old_post$beta
+  age_seq <- seq_len(age_max)
+  M <- vapply(seq_along(old_post$beta),
+              function(i) old_post$lambda[i] *
+                exp(-old_post$beta[i] * (age_seq - old_age_offset)),
+              numeric(length(age_seq)))
   
-  old_FOI_mat <- matrix(data=NA, nrow=max_age, ncol=length(old_beta))
-  
-  for (i in 1:length(old_beta)) {
-    old_FOI_mat[,i] <- old_lambda[i]*exp(-old_beta[i]*age_seq)
-  }
-  
-  old_df <- data.frame(Age = age_seq,
-                       mean = rowMeans(old_FOI_mat),
-                       q5   = matrixStats::rowQuantiles(old_FOI_mat, probs=0.05),
-                       q95  = matrixStats::rowQuantiles(old_FOI_mat, probs=0.95)
-                       ) %>% dplyr::filter(Age > 0) 
-  
-  virus_col   <- virus_cols [[virus]]
-  
+  out <- data.frame(
+    Age  = age_seq,
+    mean = rowMeans(M),
+    q5   = matrixStats::rowQuantiles(M, probs = 0.05),
+    q95  = matrixStats::rowQuantiles(M, probs = 0.95)
+  )
+  rm(M, old_post)
+  out
+}
+
+foi_new_summary <- function(draws_df, age_max) {
+  cols <- paste0("lambda_long[", seq_len(age_max), "]")
+  M <- as.matrix(draws_df[, cols, drop = FALSE])
+  data.frame(Age  = seq_len(age_max),
+             mean = colMeans(M),
+             q5   = apply(M, 2, stats::quantile, 0.05),
+             q95  = apply(M, 2, stats::quantile, 0.95))
+}
+
+plot_foi_new_old <- function(virus, new_df, old_df) {
+  virus_col <- virus_cols[[virus]]
   ggplot() +
-    geom_ribbon(
-      data = new_df,
-      aes(x = Age, ymin = q5, ymax = q95, fill = "New"),
-      alpha = 0.3
-    ) +
-    geom_line(
-      data = new_df,
-      aes(x = Age, y = mean, color = "New"),
-      linewidth = 1.5
-    ) +
-    geom_ribbon(
-      data = old_df,
-      aes(x = Age, ymin = q5, ymax = q95, fill = "Old"),
-      alpha = 0.3
-    ) +
-    geom_line(
-      data = old_df,
-      aes(x = Age, y = mean, color = "Old"),
-      linewidth = 1.5
-    ) +
+    geom_ribbon(data = new_df, aes(Age, ymin = q5, ymax = q95, fill = "New"), alpha = 0.3) +
+    geom_line(  data = new_df, aes(Age, mean,      color = "New"), linewidth = 1.5) +
+    geom_ribbon(data = old_df, aes(Age, ymin = q5, ymax = q95, fill = "Old"), alpha = 0.3) +
+    geom_line(  data = old_df, aes(Age, mean,      color = "Old"), linewidth = 1.5) +
     labs(
       title = pretty_virus(virus),
       x = "Age (Years)",

@@ -29,6 +29,20 @@ functions {
     }
     return out;
   }
+  
+  real partial_ll(array[] int idx, int start, int end,
+                  array[] vector log_phi_draws, array[] int ages,
+                  matrix log_state, vector mu_x, vector sig_x,
+                  real log_M, real half_log_2pi) {
+    real out = 0;
+    for (q in 1:size(idx)) {
+      int i = idx[q];
+      out += log_sum_exp(to_vector(log_state[ages[i] + 1])
+                         + log_state_lik(log_phi_draws[i], mu_x, sig_x,
+                                         log_M, half_log_2pi));
+    }
+    return out;
+  }
 }
 
 data {
@@ -47,6 +61,8 @@ data {
   int<lower=0, upper=1> foi_piecewise;          // 1 = piecewise-constant lambda(a)
   int<lower=0>          n_brackets;
   array[age_max] int<lower=0> bracket_of_age;   // ignored when foi_piecewise = 0
+  
+  int<lower=1> grainsize;
 }
 
 transformed data {
@@ -55,6 +71,11 @@ transformed data {
   int n_pw     = foi_piecewise  ? n_brackets : 0;
   real log_M        = log(n_phi_draws);
   real half_log_2pi = 0.5 * log(2 * pi());
+  
+  array[n] int ii;
+  for (i in 1:n) {
+    ii[i] = i;
+  }
 }
 
 parameters {
@@ -102,11 +123,9 @@ model {
     }
   }
 
-  for (i in 1:n) {
-    target += log_sum_exp(to_vector(log_state[ages[i] + 1])
-                          + log_state_lik(log_phi_draws[i], mu_x, sig_x,
-                                          log_M, half_log_2pi));
-  }
+  target += reduce_sum(partial_ll, ii, grainsize,
+                       log_phi_draws, ages, log_state, mu_x, sig_x,
+                       log_M, half_log_2pi);
 
   mu         ~ normal(0, 5);
   sigma_phi  ~ normal(0, 1);

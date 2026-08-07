@@ -1,20 +1,15 @@
-// antibody_mech.stan with k0 made estimable (fixed or free)
-//
-//   estimate_k0 = 0 : hold k0 at the constant k0_fixed
-//   estimate_k0 = 1 : estimate k0 freely, with prior normal(0, k0_prior_sd)
-//
-//   transform_prior = 1 : use the exactly transformed prior on phi,
-//                         cauchy(0, phi_prior_scale * exp(-k0 / k1)).
-//                         Because the half-Cauchy is a scale family and
-//                         phi' = phi * exp(-k0/k1), this makes the model an
-//                         exact reparametrisation of the k0 = 0 model
-//
-//   transform_prior = 0 : leave the prior at cauchy(0, phi_prior_scale),
-//                         i.e. what happens if k0 is simply freed without
-//                         adjusting anything else
-//
-// With estimate_k0 = 0, k0_fixed = 0, transform_prior = 1 and
-// phi_prior_scale = 500 this file is identical to antibody_mech.stan.
+functions {
+  real partial_binom(array[] int idx, int start, int end,
+                     vector log_phi, array[,] int z,
+                     int n_replicates, vector log_d, real k1) {
+    real out = 0;
+    for (q in 1:size(idx)) {
+      int i = idx[q];
+      out += binomial_lpmf(z[i] | n_replicates, Phi(k1 * (log_phi[i] - log_d)));
+    }
+    return out;
+  }
+}
 
 data {
   int<lower=1> n_individuals;                       // number of serosurveyed individuals
@@ -28,7 +23,15 @@ data {
   real k0_fixed;
   real<lower=0> k0_prior_sd;
   real<lower=0> phi_prior_scale;                    // 500 in antibody_mech.stan
+  int<lower=1> grainsize;
 }
+
+transformed data {
+  vector[n_dilutions] log_d = log(d);
+  array[n_individuals] int ii;
+  for (i in 1:n_individuals) ii[i] = i;
+}
+
 parameters {
   array[estimate_k0] real k0_free;                  // length 0 when k0 is fixed
   real<lower=0> k1;                                 // slope
@@ -40,16 +43,8 @@ transformed parameters {
   log_phi = log(phi);
 }
 model {
-  {
-    array[n_individuals] vector[n_dilutions] eta;
-    for (i in 1:n_individuals) {
-      eta[i] = k0 + k1 * (log_phi[i] - log(d));
-    }
-
-    for (i in 1:n_individuals) {
-      z[i] ~ binomial(n_replicates, Phi(eta[i]));
-    }
-  }
+  target += reduce_sum(partial_binom, ii, grainsize,
+                       log_phi, z, n_replicates, log_d, k1);
 
   k1 ~ cauchy(0, 1);
   phi ~ cauchy(0, phi_prior_scale * (transform_prior ? exp(-k0 / k1) : 1.0));

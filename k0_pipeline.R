@@ -60,7 +60,9 @@ k0_targets <- list(
         sero_stan_file = "Stan/antibody_sero.stan",   # SII, as used for CVA6
         sero_stan_data = k0_sero_data,
         spec           = spec,
-        seed           = sero_seed
+        seed           = sero_seed,
+        # stan_cpp=stan_cpp,
+        threads_per_chain=sero_threads
       )
     )
   ),

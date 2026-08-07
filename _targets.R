@@ -16,42 +16,95 @@ tar_option_set(
     "ggplot2", "gt", "gtExtras", "cowplot", "grid", "gridExtra", "khroma",
     "patchwork", "scales", "pdftools", "showtext", "viridis", "GGally"
   ),
-  format = "qs"
+  format = "qs",
+  resources = tar_resources(
+      qs = tar_resources_qs(preset = "high")
+    ),
+  memory = "transient",
+  garbage_collection = TRUE
+)
+
+# ---------- Global MCMC settings ----------
+
+# antibody model
+ab_iter_warmup   <- 500 #5
+ab_iter_sampling <- 500 #5
+ab_chains        <- 4 #1
+ab_parallel      <- 4 #1
+ab_seed          <- 1
+ab_refresh       <- 200 #1
+
+# serocatalytic model
+sero_iter_sampling <- 1000 #2
+sero_iter_warmup   <- floor(sero_iter_sampling / 5) #1
+sero_chains        <- 4 #1
+sero_parallel      <- 4 #1
+sero_seed          <- 2
+sero_refresh       <- 200 #1
+
+# seroreversion fits: omega is weakly identified and needs longer adaptation
+sero_sr_iter_warmup <- 800 #2
+sero_sr_adapt_delta <- 0.9
+sero_omega_prior_sd <- 0.5
+sero_sigma_by_state <- 1L
+
+# thin antibody posterior draws for speed (NULL = no thinning)
+n_phi_draws_thin <- 250 #NULL 
+
+# k0 sensitivity analysis
+K0_SPECS <- c("-2", "-1", "0", "1", "2", "free")
+K0_IDS   <- c("m2", "m1", "z0", "p1", "p2", "free")
+K0_FIXED <- c("-2", "-1", "0", "1", "2")
+K0_PHI_PRIOR_SCALE <- 500
+K0_PRIOR_SD        <- 5
+
+K0_S2_THIN     <- n_phi_draws_thin
+K0_S2_CHAINS   <- sero_chains
+K0_S2_WARMUP   <- 200
+K0_S2_SAMPLING <- 200
+K0_S2_REFRESH  <- 20
+
+# threading
+n_cores      <- parallel::detectCores(logical = FALSE)
+sero_threads <- max(1L, floor(n_cores / sero_chains))
+ab_threads   <- max(1L, floor(n_cores / ab_chains))
+stan_cpp     <- list(stan_threads = TRUE)
+
+sero_vars <- list(
+  sii = c("mu", "mu_x", "sigma_phi", "sigma_x", "psi",
+          "lambda_1", "kappa", "lambda_long",
+          "log_likelihood", "prob_by_group", "lp__"),
+  
+  si  = c("mu", "mu_x", "sigma_phi", "sigma_x",
+          "lambda_1", "kappa", "lambda_long",
+          "log_likelihood", "prob_by_group", "lp__"),
+  
+  siis = c("mu", "mu_x", "sigma_phi", "sig_x", "psi", "omega",
+           "lambda_1", "kappa", "lambda_long", "state_probs",
+           "mean_years_to_reversion", "lprior",
+           "log_lik", "prob_by_group", "lp__"),
+  
+  sis  = c("mu", "mu_x", "sigma_phi", "sig_x", "omega",
+           "lambda_1", "kappa", "lambda_long", "state_probs",
+           "mean_years_to_reversion", "lprior",
+           "log_lik", "prob_by_group", "lp__")
 )
 
 # load all functions in R/ directory
 tar_source()
 source("k0_pipeline.R")
 
+# compile .stan files
+invisible(lapply(
+  c("Stan/antibody_mech.stan", "Stan/antibody_mech_k0.stan",
+    "Stan/antibody_sero.stan", "Stan/antibody_sero_two_compartment.stan",
+    "Stan/antibody_sero_sis.stan", "Stan/antibody_sero_siis.stan"),
+  function(f) cmdstanr::cmdstan_model(f, cpp_options = stan_cpp)
+))
+
+
 # to render tables
 ensure_chromote_browser()
-
-# ---------- Global MCMC settings ----------
-
-# antibody model
-ab_iter_warmup   <- 500
-ab_iter_sampling <- 500
-ab_chains        <- 4
-ab_parallel      <- 4
-ab_seed          <- 1
-ab_refresh       <- 200
-
-# serocatalytic model
-sero_iter_sampling <- 1000
-sero_iter_warmup   <- floor(sero_iter_sampling / 5)
-sero_chains        <- 4
-sero_parallel      <- 4
-sero_seed          <- 2
-sero_refresh       <- 200
-
-# seroreversion fits: omega is weakly identified and needs longer adaptation
-sero_sr_iter_warmup <- 800
-sero_sr_adapt_delta <- 0.9
-sero_omega_prior_sd <- 0.5
-sero_sigma_by_state <- 1L
-
-# thin antibody posterior draws for speed (NULL = no thinning)
-n_phi_draws_thin <- 500 #NULL 
 
 # ---------- Pipeline ----------
 list(
@@ -70,7 +123,10 @@ list(
     chains = ab_chains,
     parallel_chains = ab_parallel,
     seed = ab_seed,
-    refresh = ab_refresh
+    refresh = ab_refresh,
+    
+    cpp_options = stan_cpp,
+    threads_per_chain = ab_threads
   ),
   
   tar_stan_mcmc(
@@ -82,7 +138,10 @@ list(
     chains = ab_chains,
     parallel_chains = ab_parallel,
     seed = ab_seed,
-    refresh = ab_refresh
+    refresh = ab_refresh,
+    
+    cpp_options = stan_cpp,
+    threads_per_chain = ab_threads
   ),
   
   tar_stan_mcmc(
@@ -94,7 +153,10 @@ list(
     chains = ab_chains,
     parallel_chains = ab_parallel,
     seed = ab_seed,
-    refresh = ab_refresh
+    refresh = ab_refresh,
+    
+    cpp_options = stan_cpp,
+    threads_per_chain = ab_threads
   ),
   
   # --- Antibody raw data for PPC  ---
@@ -239,7 +301,11 @@ list(
     chains = sero_chains,
     parallel_chains = sero_parallel,
     seed = sero_seed,
-    refresh = sero_refresh
+    refresh = sero_refresh,
+    
+    variables = sero_vars$sii,
+    cpp_options = stan_cpp,
+    threads_per_chain = sero_threads
   ),
   
   tar_stan_mcmc( # SII model
@@ -251,7 +317,11 @@ list(
     chains = sero_chains,
     parallel_chains = sero_parallel,
     seed = sero_seed,
-    refresh = sero_refresh
+    refresh = sero_refresh,
+    
+    variables = sero_vars$sii,
+    cpp_options = stan_cpp,
+    threads_per_chain = sero_threads
   ),
   
   tar_stan_mcmc( # SI model
@@ -263,7 +333,11 @@ list(
     chains = sero_chains,
     parallel_chains = sero_parallel,
     seed = sero_seed,
-    refresh = sero_refresh
+    refresh = sero_refresh,
+    
+    variables = sero_vars$si,
+    cpp_options = stan_cpp,
+    threads_per_chain = sero_threads
   ),
   
   tar_stan_mcmc( # SII model
@@ -275,7 +349,11 @@ list(
     chains = sero_chains,
     parallel_chains = sero_parallel,
     seed = sero_seed,
-    refresh = sero_refresh
+    refresh = sero_refresh,
+    
+    variables = sero_vars$sii,
+    cpp_options = stan_cpp,
+    threads_per_chain = sero_threads
   ),
   
   # -------- Combine draws & summaries --------
@@ -342,7 +420,7 @@ list(
   ),
   tar_target( # SI model
     EV68_serodynamics_plot,
-    plot_serodynamics("EV68", sero_plot_data_EV68, EV68_draws_antibody_sero_two_compartment)
+    plot_serodynamics("EV68", sero_plot_data_EV68, EV68_draws_antibody_sero_two_compartment, three_comp=FALSE)
   ),
   
   tar_target( # SII model
@@ -375,43 +453,12 @@ list(
                                                     sero_plot_data_EV68$age_max))
   ),
   
-  # grid of plots
-  tar_target(
-    combined_FOI_grid_plot,
-    plot_patchwork(
-      CVA6_FOI_new_old_plot,
-      EV71_FOI_new_old_plot,
-      EV68_FOI_new_old_plot,
-      FOI=TRUE
-    )
-  ),
   
   # new vs old FOI plots
-  tar_target(
-    CVA6_FOI_new_old_plot,
-    plot_foi_new_old("CVA6", sero_plot_data_CVA6,
-                     CVA6_summary_antibody_sero,
-                     CVA6_draws_antibody_sero)
-  ),
-  tar_target(
-    EV71_FOI_new_old_plot,
-    plot_foi_new_old("EV71", sero_plot_data_EV71,
-                     EV71_summary_antibody_sero,
-                     EV71_draws_antibody_sero)
-  ),
-  tar_target(
-    EV68_FOI_new_old_plot,
-    plot_foi_new_old("EV68", sero_plot_data_EV68,
-                     EV68_summary_antibody_sero_two_compartment,
-                     EV68_draws_antibody_sero_two_compartment)
-  ),
   
-  
-  # -------- Posterior density plots --------
-  tar_target(
-    combined_density_plots,
-    plot_param_densities_combined(draws_combined)
-  ),
+  tar_target(old_foi_CVA6, summarise_old_foi("CVA6", sero_plot_data_CVA6$age_max)),
+  tar_target(old_foi_EV71, summarise_old_foi("EV71", sero_plot_data_EV71$age_max)),
+  tar_target(old_foi_EV68, summarise_old_foi("EV68", sero_plot_data_EV68$age_max)),
   
   # -------- Parameter tables --------
   tar_target(
@@ -436,10 +483,28 @@ list(
   tar_target(file_EV71_FOI, save_plot_pdf(EV71_FOI_plot, "outputs/EV71/EV71_FOI_plot.pdf", 8, 6), format = "file"),
   tar_target(file_EV68_FOI, save_plot_pdf(EV68_FOI_plot, "outputs/EV68/EV68_FOI_plot.pdf", 8, 6), format = "file"),
   
-  tar_target(file_combined_FOI, save_plot_pdf(combined_FOI_plot, "outputs/combined/combined_FOI_plot.pdf", 8, 6), format = "file"),
-  tar_target(file_combined_FOI_grid, save_plot_pdf(combined_FOI_grid_plot, "outputs/combined/combined_FOI_grid_plot.pdf", 12, 10), format = "file"),
+  tar_target(file_combined_foi, {
+      g <- plot_patchwork(
+        plot_foi_new_old("CVA6", foi_new_summary(CVA6_draws_antibody_sero,
+                                                 sero_plot_data_CVA6$age_max), old_foi_CVA6),
+        plot_foi_new_old("EV71", foi_new_summary(EV71_draws_antibody_sero,
+                                                 sero_plot_data_EV71$age_max), old_foi_EV71),
+        plot_foi_new_old("EV68", foi_new_summary(EV68_draws_antibody_sero_two_compartment,
+                                                 sero_plot_data_EV68$age_max), old_foi_EV68),
+        FOI = TRUE
+      )
+      save_plot_pdf(g, "outputs/combined/combined_FOI_grid_plot.pdf", 12, 10)
+    }, format = "file"
+  ),
   
-  tar_target(file_density, save_plot_pdf(combined_density_plots, "outputs/combined/combined_density_plots.pdf", 10, 7), format = "file"),
+  tar_target(
+    file_density,
+    save_plot_pdf(
+      plot_param_densities_combined(draws_combined),
+      "outputs/combined/combined_density_plots.pdf", 12, 10
+    ),
+    format = "file"
+  ),
   
   tar_target(file_CVA6_phi, save_plot_pdf(CVA6_phi_plot, "outputs/CVA6/CVA6_phi_plot.pdf", 8, 6), format = "file"),
   tar_target(file_EV71_phi, save_plot_pdf(EV71_phi_plot, "outputs/EV71/EV71_phi_plot.pdf", 8, 6), format = "file"),
@@ -450,32 +515,47 @@ list(
   tar_target(file_EV68_serodynamics, save_plot_pdf(EV68_serodynamics_plot, "outputs/EV68/EV68_serodynamics_plot.pdf", 8, 6), format = "file"),
   tar_target(file_EV68_serodynamics_three_comp, save_plot_pdf(EV68_serodynamics_plot_three_comp, "outputs/EV68/EV68_serodynamics_plot_three_comp.pdf", 8, 6), format = "file"),
   
-  tar_target(
-    combined_serodynamics_plot,
-    plot_patchwork(
-      CVA6_serodynamics_plot,
-      EV71_serodynamics_plot,
-      EV68_serodynamics_plot
-    )
-  ),
+  # tar_target(
+  #   combined_serodynamics_plot,
+  #   plot_patchwork(
+  #     CVA6_serodynamics_plot,
+  #     EV71_serodynamics_plot,
+  #     EV68_serodynamics_plot
+  #   )
+  # ),
+  # 
+  # tar_target(file_combined_serodynamics, save_plot_pdf(combined_serodynamics_plot, "outputs/combined/combined_serodynamics_plot.pdf", 12, 10), format = "file"),
   
-  tar_target(file_combined_serodynamics, save_plot_pdf(combined_serodynamics_plot, "outputs/combined/combined_serodynamics_plot.pdf", 12, 10), format = "file"),
+  tar_target(
+    file_combined_serodynamics,
+    {
+      g <- plot_patchwork(
+        CVA6_serodynamics_plot,
+        EV71_serodynamics_plot,
+        EV68_serodynamics_plot,
+        lines=FALSE
+      )
+      save_plot_pdf(g, "outputs/combined/combined_serodynamics_plot.pdf", 12, 10)
+    },
+    format = "file"
+  ),
   
   tar_target(file_CVA6_weighted, save_plot_pdf(CVA6_weighted_avg_phi_plot, "outputs/CVA6/CVA6_weighted_avg_phi_plot.pdf", 10, 7), format = "file"),
   tar_target(file_EV71_weighted, save_plot_pdf(EV71_weighted_avg_phi_plot, "outputs/EV71/EV71_weighted_avg_phi_plot.pdf", 10, 7), format = "file"),
   tar_target(file_EV68_weighted, save_plot_pdf(EV68_weighted_avg_phi_plot, "outputs/EV68/EV68_weighted_avg_phi_plot.pdf", 10, 7), format = "file"),
   
   tar_target(
-    combined_weighted_avg_phi_plot,
-    plot_patchwork(
-      CVA6_weighted_avg_phi_plot,
-      EV71_weighted_avg_phi_plot,
-      EV68_weighted_avg_phi_plot,
-      lines=FALSE
-    )
+    file_combined_weighted_avg_phi,
+    {
+      g <- plot_patchwork(
+        CVA6_weighted_avg_phi_plot,
+        EV71_weighted_avg_phi_plot,
+        EV68_weighted_avg_phi_plot
+      )
+      save_plot_pdf(g, "outputs/combined/combined_weighted_avg_phi_plot.pdf", 12, 10)
+    },
+    format = "file"
   ),
-  
-  tar_target(file_combined_weighted_avg_phi, save_plot_pdf(combined_weighted_avg_phi_plot, "outputs/combined/combined_weighted_avg_phi_plot.pdf", 12, 10), format = "file"),
   
   tar_target(file_CVA6_table, save_gt_pdf(CVA6_param_table, "outputs/CVA6/CVA6_param_table.pdf"), format = "file"),
   tar_target(file_EV71_table, save_gt_pdf(EV71_param_table, "outputs/EV71/EV71_param_table.pdf"), format = "file"),
@@ -507,7 +587,10 @@ list(
     chains = 4,
     parallel_chains = 4,
     seed = 1,
-    refresh = 200
+    refresh = 200,
+    
+    cpp_options = stan_cpp,
+    threads_per_chain = 1L
   ),
   
   tar_target(
@@ -558,7 +641,11 @@ list(
     chains = sero_chains,
     parallel_chains = sero_parallel,
     seed = sero_seed,
-    refresh = sero_refresh
+    refresh = sero_refresh,
+    
+    variables = sero_vars$si,
+    cpp_options = stan_cpp,
+    threads_per_chain = sero_threads
   ),
   
   tar_stan_mcmc(
@@ -570,7 +657,11 @@ list(
     chains = sero_chains,
     parallel_chains = sero_parallel,
     seed = sero_seed,
-    refresh = sero_refresh
+    refresh = sero_refresh,
+    
+    variables = sero_vars$si,
+    cpp_options = stan_cpp,
+    threads_per_chain = sero_threads
   ),
   
   tar_target(
@@ -815,7 +906,11 @@ list(
     parallel_chains = sero_parallel,
     adapt_delta = sero_sr_adapt_delta,
     seed = sero_seed,
-    refresh = sero_refresh
+    refresh = sero_refresh,
+    
+    variables = sero_vars$sis,
+    cpp_options = stan_cpp,
+    threads_per_chain = sero_threads
   ),
   
   tar_stan_mcmc( # SIIS
@@ -828,7 +923,11 @@ list(
     parallel_chains = sero_parallel,
     adapt_delta = sero_sr_adapt_delta,
     seed = sero_seed,
-    refresh = sero_refresh
+    refresh = sero_refresh,
+    
+    variables = sero_vars$siis,
+    cpp_options = stan_cpp,
+    threads_per_chain = sero_threads
   ),
   
   tar_target(
@@ -849,7 +948,11 @@ list(
     parallel_chains = sero_parallel,
     adapt_delta = sero_sr_adapt_delta,
     seed = sero_seed,
-    refresh = sero_refresh
+    refresh = sero_refresh,
+    
+    variables = sero_vars$sis,
+    cpp_options = stan_cpp,
+    threads_per_chain = sero_threads
   ),
   
   tar_stan_mcmc( # SIIS
@@ -862,7 +965,11 @@ list(
     parallel_chains = sero_parallel,
     adapt_delta = sero_sr_adapt_delta,
     seed = sero_seed,
-    refresh = sero_refresh
+    refresh = sero_refresh,
+    
+    variables = sero_vars$siis,
+    cpp_options = stan_cpp,
+    threads_per_chain = sero_threads
   ),
   
   tar_target(
@@ -884,7 +991,11 @@ list(
     parallel_chains = sero_parallel,
     adapt_delta = sero_sr_adapt_delta,
     seed = sero_seed,
-    refresh = sero_refresh
+    refresh = sero_refresh,
+    
+    variables = sero_vars$sis,
+    cpp_options = stan_cpp,
+    threads_per_chain = sero_threads
   ),
   
   tar_stan_mcmc( # SIIS
@@ -897,7 +1008,11 @@ list(
     parallel_chains = sero_parallel,
     adapt_delta = sero_sr_adapt_delta,
     seed = sero_seed,
-    refresh = sero_refresh
+    refresh = sero_refresh,
+    
+    variables = sero_vars$siis,
+    cpp_options = stan_cpp,
+    threads_per_chain = sero_threads
   ),
   
   #### LOO-CV across SI/SII/SIS/SIIS models ####
@@ -945,7 +1060,19 @@ list(
     combine_model_loo_tables(CVA6_model_loo, EV71_model_loo, EV68_model_loo)
   ),
   
-  #### k0 sensitivity analysis ####
+  tar_target(
+    file_combined_model_loo,
+    {
+      ensure_dir("outputs/combined")
+      write.csv(combined_model_loo_df,
+                "outputs/combined/combined_model_LOOCV.csv", row.names = FALSE)
+      "outputs/combined/combined_model_LOOCV.csv"
+    },
+    format = "file"
+  ),
+  
+  #### k0 sensitivity analysis (UNCOMMENT LATER) ####
+  
   k0_targets,
   
   #### Seroreversion main results figures -> outputs/seroreversion ####
@@ -1060,10 +1187,13 @@ list(
   ),
   
   #### vectorised sigma ####
+  
+  # CVA6
   tar_target(sero_stan_data_CVA6_shared,
-             make_sero_stan_data(serum_meta_CVA6, log_phi_draws_CVA6,
+             make_sero_stan_data(ab_prep_CVA6$serum_meta, log_phi_draws_CVA6,
                                  sigma_by_state = 0L)),
   
+  # SII
   tar_stan_mcmc(
     name = "CVA6_shared",
     stan_files = "Stan/antibody_sero.stan",
@@ -1071,6 +1201,55 @@ list(
     iter_warmup = sero_iter_warmup,
     iter_sampling = sero_iter_sampling - sero_iter_warmup,
     chains = sero_chains, parallel_chains = sero_parallel,
+    seed = sero_seed, refresh = sero_refresh,
+    variables = sero_vars$sii,
+    cpp_options = stan_cpp,
+    threads_per_chain = sero_threads
+  ),
+  
+  # SI
+  tar_stan_mcmc(
+    name = "CVA6_two_comp_shared",
+    stan_files = "Stan/antibody_sero_two_compartment.stan",
+    data = sero_stan_data_CVA6_shared,
+    iter_warmup = sero_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    seed = sero_seed, refresh = sero_refresh,
+    variables = sero_vars$si,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads
+  ),
+  
+  tar_target(sero_sr_shared_data_CVA6,
+             add_sero_switches(sero_stan_data_CVA6,
+                               estimate_omega = 1L,
+                               omega_prior_sd = sero_omega_prior_sd,
+                               sigma_by_state = 0L)),
+  # SIS
+  tar_stan_mcmc(
+    name = "CVA6_sr_shared",
+    stan_files = "Stan/antibody_sero_sis.stan",
+    data = sero_sr_shared_data_CVA6,
+    iter_warmup = sero_sr_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    adapt_delta = sero_sr_adapt_delta,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads,
+    variables = sero_vars$sis,
+    seed = sero_seed, refresh = sero_refresh
+  ),
+  
+  # SIIS
+  tar_stan_mcmc(
+    name = "CVA6_sr_3_shared",
+    stan_files = "Stan/antibody_sero_siis.stan",
+    data = sero_sr_shared_data_CVA6,
+    iter_warmup = sero_sr_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    adapt_delta = sero_sr_adapt_delta,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads,
+    variables = sero_vars$siis,
     seed = sero_seed, refresh = sero_refresh
   ),
   
@@ -1091,39 +1270,87 @@ list(
   
   # EV68
   tar_target(sero_stan_data_EV68_shared,
-             make_sero_stan_data(serum_meta_EV68, log_phi_draws_EV68,
+             make_sero_stan_data(ab_prep_EV68$serum_meta, log_phi_draws_EV68,
                                  sigma_by_state = 0L)),
-  
+  # SI
   tar_stan_mcmc(
     name = "EV68_shared",
+    stan_files = "Stan/antibody_sero_two_compartment.stan",
+    data = sero_stan_data_EV68_shared,
+    iter_warmup = sero_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    seed = sero_seed, refresh = sero_refresh,
+    variables = sero_vars$si,
+    cpp_options = stan_cpp,
+    threads_per_chain = sero_threads
+  ),
+  
+  # SII
+  tar_stan_mcmc(
+    name = "EV68_three_comp_shared",
     stan_files = "Stan/antibody_sero.stan",
     data = sero_stan_data_EV68_shared,
     iter_warmup = sero_iter_warmup,
     iter_sampling = sero_iter_sampling - sero_iter_warmup,
     chains = sero_chains, parallel_chains = sero_parallel,
-    seed = sero_seed, refresh = sero_refresh
+    seed = sero_seed, refresh = sero_refresh,
+    variables = sero_vars$sii,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads
+  ),
+  
+  tar_target(sero_sr_shared_data_EV68,
+             add_sero_switches(sero_stan_data_EV68,
+                               estimate_omega = 1L,
+                               omega_prior_sd = sero_omega_prior_sd,
+                               sigma_by_state = 0L)),
+  # SIS
+  tar_stan_mcmc(
+    name = "EV68_sr_shared",
+    stan_files = "Stan/antibody_sero_sis.stan",
+    data = sero_sr_shared_data_EV68,
+    iter_warmup = sero_sr_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    adapt_delta = sero_sr_adapt_delta,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads,
+    variables = sero_vars$sis, seed = sero_seed, refresh = sero_refresh
+  ),
+  
+  # SIIS
+  tar_stan_mcmc(
+    name = "EV68_sr_3_shared",
+    stan_files = "Stan/antibody_sero_siis.stan",
+    data = sero_sr_shared_data_EV68,
+    iter_warmup = sero_sr_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    adapt_delta = sero_sr_adapt_delta,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads,
+    variables = sero_vars$siis, seed = sero_seed, refresh = sero_refresh
   ),
   
   tar_target(
     sigma_loo_EV68,
     compare_sero_models_loo(list(
-      shared_sigma   = EV68_shared_draws_antibody_sero,
-      by_state_sigma = EV68_draws_antibody_sero
+      shared_sigma   = EV68_shared_draws_antibody_sero_two_compartment,
+      by_state_sigma = EV68_draws_antibody_sero_two_compartment
     ), virus = "EV68")
   ),
   
   tar_target(
     sigma_reclass_EV68,
-    serostate_reclassification(EV68_shared_summary_antibody_sero,
-                               EV68_summary_antibody_sero,
-                               n = sero_plot_data_EV68$n, k = 3)
+    serostate_reclassification(EV68_shared_summary_antibody_sero_two_compartment,
+                               EV68_summary_antibody_sero_two_compartment,
+                               n = sero_plot_data_EV68$n, k = 2)
   ),
   
   # EV71
   tar_target(sero_stan_data_EV71_shared,
-             make_sero_stan_data(serum_meta_EV71, log_phi_draws_EV71,
+             make_sero_stan_data(ab_prep_EV71$serum_meta, log_phi_draws_EV71,
                                  sigma_by_state = 0L)),
   
+  # SII
   tar_stan_mcmc(
     name = "EV71_shared",
     stan_files = "Stan/antibody_sero.stan",
@@ -1131,7 +1358,55 @@ list(
     iter_warmup = sero_iter_warmup,
     iter_sampling = sero_iter_sampling - sero_iter_warmup,
     chains = sero_chains, parallel_chains = sero_parallel,
-    seed = sero_seed, refresh = sero_refresh
+    seed = sero_seed, refresh = sero_refresh,
+    variables = sero_vars$sii,
+    cpp_options = stan_cpp,
+    threads_per_chain = sero_threads
+  ),
+  
+  # SI
+  tar_stan_mcmc(
+    name = "EV71_two_comp_shared",
+    stan_files = "Stan/antibody_sero_two_compartment.stan",
+    data = sero_stan_data_EV71_shared,
+    iter_warmup = sero_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    seed = sero_seed, refresh = sero_refresh,
+    variables = sero_vars$si,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads
+  ),
+  
+  tar_target(sero_sr_shared_data_EV71,
+             add_sero_switches(sero_stan_data_EV71,
+                               estimate_omega = 1L,
+                               omega_prior_sd = sero_omega_prior_sd,
+                               sigma_by_state = 0L)),
+  
+  # SIS
+  tar_stan_mcmc(
+    name = "EV71_sr_shared",
+    stan_files = "Stan/antibody_sero_sis.stan",
+    data = sero_sr_shared_data_EV71,
+    iter_warmup = sero_sr_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    adapt_delta = sero_sr_adapt_delta,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads,
+    variables = sero_vars$sis, seed = sero_seed, refresh = sero_refresh
+  ),
+  
+  # SIIS
+  tar_stan_mcmc(
+    name = "EV71_sr_3_shared",
+    stan_files = "Stan/antibody_sero_siis.stan",
+    data = sero_sr_shared_data_EV71,
+    iter_warmup = sero_sr_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    adapt_delta = sero_sr_adapt_delta,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads,
+    variables = sero_vars$siis, seed = sero_seed, refresh = sero_refresh
   ),
   
   tar_target(
@@ -1147,5 +1422,556 @@ list(
     serostate_reclassification(EV71_shared_summary_antibody_sero,
                                EV71_summary_antibody_sero,
                                n = sero_plot_data_EV71$n, k = 3)
+  ),
+  
+  # combined loo comparison (sigma)
+  tar_target(
+    file_sigma_comparison,
+    {
+      ensure_dir("outputs/diagnostics")
+      out <- dplyr::bind_rows(sigma_loo_CVA6, sigma_loo_EV71, sigma_loo_EV68)
+      out$prop_reclassified <- c(
+        rep(sigma_reclass_CVA6$prop_changed, 2),
+        rep(sigma_reclass_EV71$prop_changed, 2),
+        rep(sigma_reclass_EV68$prop_changed, 2))
+      write.csv(out, "outputs/diagnostics/sigma_shared_vs_bystate.csv",
+                row.names = FALSE)
+      "outputs/diagnostics/sigma_shared_vs_bystate.csv"
+    },
+    format = "file"
+  ),
+  
+  #### convergence diagnostics ####
+  tar_target(
+    convergence_df,
+    label_convergence_failures(dplyr::bind_rows(
+      # --- main fits, by-state sigma ---
+      sero_convergence_row(CVA6_summary_antibody_sero,
+                           CVA6_draws_antibody_sero, "CVA6", "SII"),
+      sero_convergence_row(EV71_summary_antibody_sero,
+                           EV71_draws_antibody_sero, "EV71", "SII"),
+      sero_convergence_row(EV68_three_comp_summary_antibody_sero,
+                           EV68_three_comp_draws_antibody_sero, "EV68", "SII"),
+      sero_convergence_row(CVA6_two_comp_summary_antibody_sero_two_compartment,
+                           CVA6_two_comp_draws_antibody_sero_two_compartment, "CVA6", "SI"),
+      sero_convergence_row(EV71_two_comp_summary_antibody_sero_two_compartment,
+                           EV71_two_comp_draws_antibody_sero_two_compartment, "EV71", "SI"),
+      sero_convergence_row(EV68_summary_antibody_sero_two_compartment,
+                           EV68_draws_antibody_sero_two_compartment, "EV68", "SI"),
+      
+      # --- shared sigma ---
+      sero_convergence_row(CVA6_shared_summary_antibody_sero,
+                           CVA6_shared_draws_antibody_sero, "CVA6", "SII", "shared"),
+      sero_convergence_row(EV71_shared_summary_antibody_sero,
+                           EV71_shared_draws_antibody_sero, "EV71", "SII", "shared"),
+      sero_convergence_row(EV68_three_comp_shared_summary_antibody_sero,
+                           EV68_three_comp_shared_draws_antibody_sero, "EV68", "SII", "shared"),
+      sero_convergence_row(CVA6_two_comp_shared_summary_antibody_sero_two_compartment,
+                           CVA6_two_comp_shared_draws_antibody_sero_two_compartment,
+                           "CVA6", "SI", "shared"),
+      sero_convergence_row(EV71_two_comp_shared_summary_antibody_sero_two_compartment,
+                           EV71_two_comp_shared_draws_antibody_sero_two_compartment,
+                           "EV71", "SI", "shared"),
+      sero_convergence_row(EV68_shared_summary_antibody_sero_two_compartment,
+                           EV68_shared_draws_antibody_sero_two_compartment, "EV68", "SI", "shared"),
+      
+      # --- seroreversion, by-state sigma ---
+      sero_convergence_row(CVA6_sr_summary_antibody_sero_sis,
+                           CVA6_sr_draws_antibody_sero_sis, "CVA6", "SIS"),
+      sero_convergence_row(EV71_sr_summary_antibody_sero_sis,
+                           EV71_sr_draws_antibody_sero_sis, "EV71", "SIS"),
+      sero_convergence_row(EV68_sr_summary_antibody_sero_sis,
+                           EV68_sr_draws_antibody_sero_sis, "EV68", "SIS"),
+      sero_convergence_row(CVA6_sr_3_summary_antibody_sero_siis,
+                           CVA6_sr_3_draws_antibody_sero_siis, "CVA6", "SIIS"),
+      sero_convergence_row(EV71_sr_3_summary_antibody_sero_siis,
+                           EV71_sr_3_draws_antibody_sero_siis, "EV71", "SIIS"),
+      sero_convergence_row(EV68_sr_3_summary_antibody_sero_siis,
+                           EV68_sr_3_draws_antibody_sero_siis, "EV68", "SIIS"),
+      
+      # --- seroreversion, shared sigma (isolates omega from sigma) ---
+      sero_convergence_row(CVA6_sr_shared_summary_antibody_sero_sis,
+                           CVA6_sr_shared_draws_antibody_sero_sis, "CVA6", "SIS", "shared"),
+      sero_convergence_row(EV71_sr_shared_summary_antibody_sero_sis,
+                           EV71_sr_shared_draws_antibody_sero_sis, "EV71", "SIS", "shared"),
+      sero_convergence_row(EV68_sr_shared_summary_antibody_sero_sis,
+                           EV68_sr_shared_draws_antibody_sero_sis, "EV68", "SIS", "shared"),
+      sero_convergence_row(CVA6_sr_3_shared_summary_antibody_sero_siis,
+                           CVA6_sr_3_shared_draws_antibody_sero_siis, "CVA6", "SIIS", "shared"),
+      sero_convergence_row(EV71_sr_3_shared_summary_antibody_sero_siis,
+                           EV71_sr_3_shared_draws_antibody_sero_siis, "EV71", "SIIS", "shared"),
+      sero_convergence_row(EV68_sr_3_shared_summary_antibody_sero_siis,
+                           EV68_sr_3_shared_draws_antibody_sero_siis, "EV68", "SIIS", "shared")
+    ))
+  ),
+  
+  tar_target(
+    file_convergence_csv,
+    {
+      ensure_dir("outputs/diagnostics")
+      write.csv(convergence_df, "outputs/diagnostics/convergence_summary.csv",
+                row.names = FALSE)
+      "outputs/diagnostics/convergence_summary.csv"
+    },
+    format = "file"
+  ),
+  
+  tar_target(
+    file_convergence_table,
+    save_gt_pdf(make_convergence_table(convergence_df),
+                "outputs/diagnostics/convergence_summary.pdf"),
+    format = "file"
+  ),
+  
+  #### stratification by survey year [TESTING] ####
+  tar_target(df_test, stationarity_descriptive(ab_prep_CVA6$serum_meta, log_phi_draws_CVA6, "CVA6")),
+  tar_target(plot_strat_test, plot_stationarity_descriptive(df_test)),
+  
+  
+  ## CVA6
+  tar_target(sero_data_CVA6_2006,
+             subset_sero_data_by_year(sero_stan_data_CVA6_shared,
+                                      ab_prep_CVA6$serum_meta, 2006)),
+  tar_target(sero_data_CVA6_2011,
+             subset_sero_data_by_year(sero_stan_data_CVA6_shared,
+                                      ab_prep_CVA6$serum_meta, 2011)),
+  tar_target(sero_data_CVA6_2017,
+             subset_sero_data_by_year(sero_stan_data_CVA6_shared,
+                                      ab_prep_CVA6$serum_meta, 2017)),
+  
+  tar_stan_mcmc(
+    name = "CVA6_yr2006",
+    stan_files = "Stan/antibody_sero.stan",
+    data = sero_data_CVA6_2006,
+    iter_warmup = sero_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    seed = sero_seed, refresh = sero_refresh,
+    variables = sero_vars$sii,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads
+  ),
+  
+  tar_stan_mcmc(
+    name = "CVA6_yr2011",
+    stan_files = "Stan/antibody_sero.stan",
+    data = sero_data_CVA6_2011,
+    iter_warmup = sero_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    seed = sero_seed, refresh = sero_refresh,
+    variables = sero_vars$sii,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads
+  ),
+  
+  tar_stan_mcmc(
+    name = "CVA6_yr2017",
+    stan_files = "Stan/antibody_sero.stan",
+    data = sero_data_CVA6_2017,
+    iter_warmup = sero_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    seed = sero_seed, refresh = sero_refresh,
+    variables = sero_vars$sii,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads
+  ),
+  
+  tar_target(
+    CVA6_year_contrasts,
+    dplyr::mutate(
+      strata_contrast_all(list(
+        `2006` = CVA6_yr2006_draws_antibody_sero,
+        `2011` = CVA6_yr2011_draws_antibody_sero,
+        `2017` = CVA6_yr2017_draws_antibody_sero
+      )),
+      virus = "CVA6")
+  ),
+  
+  tar_target(
+    CVA6_year_trend,
+    dplyr::bind_rows(lapply(c("lambda_1", "kappa"), function(p)
+      strata_trend(list(
+        CVA6_yr2006_draws_antibody_sero,
+        CVA6_yr2011_draws_antibody_sero,
+        CVA6_yr2017_draws_antibody_sero
+      ), par = p)))
+  ),
+  
+  tar_target(
+    CVA6_year_seroprev,
+    dplyr::bind_rows(
+      strata_seroprev(CVA6_yr2006_draws_antibody_sero,
+                      sero_data_CVA6_2006$age_max, "2006"),
+      strata_seroprev(CVA6_yr2011_draws_antibody_sero,
+                      sero_data_CVA6_2011$age_max, "2011"),
+      strata_seroprev(CVA6_yr2017_draws_antibody_sero,
+                      sero_data_CVA6_2017$age_max, "2017"),
+      strata_seroprev(CVA6_draws_antibody_sero,
+                      sero_plot_data_CVA6$age_max, "pooled"))
+  ),
+  
+  tar_target(
+    file_CVA6_by_year,
+    {
+      ensure_dir("outputs/stratification")
+      write.csv(CVA6_year_contrasts,
+                "outputs/stratification/CVA6_by_year_contrasts.csv", row.names = FALSE)
+      write.csv(CVA6_year_trend,
+                "outputs/stratification/CVA6_by_year_trend.csv", row.names = FALSE)
+      write.csv(CVA6_year_seroprev,
+                "outputs/stratification/CVA6_by_year_seroprevalence.csv", row.names = FALSE)
+      c("outputs/stratification/CVA6_by_year_contrasts.csv",
+        "outputs/stratification/CVA6_by_year_trend.csv",
+        "outputs/stratification/CVA6_by_year_seroprevalence.csv")
+    },
+    format = "file"
+  ),
+  
+  tar_target(
+    file_CVA6_by_year_foi,
+    {
+      ensure_dir("outputs/stratification")
+      g <- plot_strata_foi(
+        virus="CVA6",
+        
+        list(
+          `2006`  = CVA6_yr2006_draws_antibody_sero,
+          `2011`  = CVA6_yr2011_draws_antibody_sero,
+          `2017`  = CVA6_yr2017_draws_antibody_sero,
+          pooled  = CVA6_draws_antibody_sero
+        ), 
+        
+        sero_plot_data_CVA6$age_max)
+      
+      save_plot_pdf(g, "outputs/stratification/CVA6_by_year_FOI.pdf", 8, 6)
+    },
+    format = "file"
+  ),
+  
+  
+  ## EV71
+  tar_target(sero_data_EV71_2006,
+             subset_sero_data_by_year(sero_stan_data_EV71_shared,
+                                      ab_prep_EV71$serum_meta, 2006)),
+  tar_target(sero_data_EV71_2011,
+             subset_sero_data_by_year(sero_stan_data_EV71_shared,
+                                      ab_prep_EV71$serum_meta, 2011)),
+  tar_target(sero_data_EV71_2017,
+             subset_sero_data_by_year(sero_stan_data_EV71_shared,
+                                      ab_prep_EV71$serum_meta, 2017)),
+  
+  tar_stan_mcmc(
+    name = "EV71_yr2006",
+    stan_files = "Stan/antibody_sero.stan",
+    data = sero_data_EV71_2006,
+    iter_warmup = sero_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    seed = sero_seed, refresh = sero_refresh,
+    variables = sero_vars$sii,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads
+  ),
+  
+  tar_stan_mcmc(
+    name = "EV71_yr2011",
+    stan_files = "Stan/antibody_sero.stan",
+    data = sero_data_EV71_2011,
+    iter_warmup = sero_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    seed = sero_seed, refresh = sero_refresh,
+    variables = sero_vars$sii,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads
+  ),
+  
+  tar_stan_mcmc(
+    name = "EV71_yr2017",
+    stan_files = "Stan/antibody_sero.stan",
+    data = sero_data_EV71_2017,
+    iter_warmup = sero_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    seed = sero_seed, refresh = sero_refresh,
+    variables = sero_vars$sii,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads
+  ),
+  
+  tar_target(
+    EV71_year_contrasts,
+    dplyr::mutate(
+      strata_contrast_all(list(
+        `2006` = EV71_yr2006_draws_antibody_sero,
+        `2011` = EV71_yr2011_draws_antibody_sero,
+        `2017` = EV71_yr2017_draws_antibody_sero
+      )),
+      virus = "EV71")
+  ),
+  
+  tar_target(
+    EV71_year_trend,
+    dplyr::bind_rows(lapply(c("lambda_1", "kappa"), function(p)
+      strata_trend(list(
+        EV71_yr2006_draws_antibody_sero,
+        EV71_yr2011_draws_antibody_sero,
+        EV71_yr2017_draws_antibody_sero
+      ), par = p)))
+  ),
+  
+  tar_target(
+    EV71_year_seroprev,
+    dplyr::bind_rows(
+      strata_seroprev(EV71_yr2006_draws_antibody_sero,
+                      sero_data_EV71_2006$age_max, "2006"),
+      strata_seroprev(EV71_yr2011_draws_antibody_sero,
+                      sero_data_EV71_2011$age_max, "2011"),
+      strata_seroprev(EV71_yr2017_draws_antibody_sero,
+                      sero_data_EV71_2017$age_max, "2017"),
+      strata_seroprev(EV71_draws_antibody_sero,
+                      sero_plot_data_EV71$age_max, "pooled"))
+  ),
+  
+  tar_target(
+    file_EV71_by_year,
+    {
+      ensure_dir("outputs/stratification")
+      write.csv(EV71_year_contrasts,
+                "outputs/stratification/EV71_by_year_contrasts.csv", row.names = FALSE)
+      write.csv(EV71_year_trend,
+                "outputs/stratification/EV71_by_year_trend.csv", row.names = FALSE)
+      write.csv(EV71_year_seroprev,
+                "outputs/stratification/EV71_by_year_seroprevalence.csv", row.names = FALSE)
+      c("outputs/stratification/EV71_by_year_contrasts.csv",
+        "outputs/stratification/EV71_by_year_trend.csv",
+        "outputs/stratification/EV71_by_year_seroprevalence.csv")
+    },
+    format = "file"
+  ),
+  
+  tar_target(
+    file_EV71_by_year_foi,
+    {
+      ensure_dir("outputs/stratification")
+      g <- plot_strata_foi(
+        virus="EV-A71",
+        
+        list(
+        `2006`  = EV71_yr2006_draws_antibody_sero,
+        `2011`  = EV71_yr2011_draws_antibody_sero,
+        `2017`  = EV71_yr2017_draws_antibody_sero,
+        pooled  = EV71_draws_antibody_sero
+        ), 
+        
+        sero_plot_data_EV71$age_max)
+      
+      save_plot_pdf(g, "outputs/stratification/EV71_by_year_FOI.pdf", 8, 6)
+    },
+    format = "file"
+  ),
+  
+  ## EV68
+  tar_target(sero_data_EV68_2006,
+             subset_sero_data_by_year(sero_stan_data_EV68_shared,
+                                      ab_prep_EV68$serum_meta, 2006)),
+  tar_target(sero_data_EV68_2011,
+             subset_sero_data_by_year(sero_stan_data_EV68_shared,
+                                      ab_prep_EV68$serum_meta, 2011)),
+  tar_target(sero_data_EV68_2017,
+             subset_sero_data_by_year(sero_stan_data_EV68_shared,
+                                      ab_prep_EV68$serum_meta, 2017)),
+  
+  tar_stan_mcmc(
+    name = "EV68_yr2006",
+    stan_files = "Stan/antibody_sero_two_compartment.stan",
+    data = sero_data_EV68_2006,
+    iter_warmup = sero_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    seed = sero_seed, refresh = sero_refresh,
+    variables = sero_vars$si,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads
+  ),
+  
+  tar_stan_mcmc(
+    name = "EV68_yr2011",
+    stan_files = "Stan/antibody_sero_two_compartment.stan",
+    data = sero_data_EV68_2011,
+    iter_warmup = sero_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    seed = sero_seed, refresh = sero_refresh,
+    variables = sero_vars$si,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads
+  ),
+  
+  tar_stan_mcmc(
+    name = "EV68_yr2017",
+    stan_files = "Stan/antibody_sero_two_compartment.stan",
+    data = sero_data_EV68_2017,
+    iter_warmup = sero_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    seed = sero_seed, refresh = sero_refresh,
+    variables = sero_vars$si,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads
+  ),
+  
+  tar_target(
+    EV68_year_contrasts,
+    dplyr::mutate(
+      strata_contrast_all(list(
+        `2006` = EV68_yr2006_draws_antibody_sero_two_compartment,
+        `2011` = EV68_yr2011_draws_antibody_sero_two_compartment,
+        `2017` = EV68_yr2017_draws_antibody_sero_two_compartment
+      )),
+      virus = "EV68")
+  ),
+  
+  tar_target(
+    EV68_year_trend,
+    dplyr::bind_rows(lapply(c("lambda_1", "kappa"), function(p)
+      strata_trend(list(
+        EV68_yr2006_draws_antibody_sero_two_compartment,
+        EV68_yr2011_draws_antibody_sero_two_compartment,
+        EV68_yr2017_draws_antibody_sero_two_compartment
+      ), par = p)))
+  ),
+  
+  tar_target(
+    EV68_year_seroprev,
+    dplyr::bind_rows(
+      strata_seroprev(EV68_yr2006_draws_antibody_sero_two_compartment,
+                      sero_data_EV68_2006$age_max, "2006"),
+      strata_seroprev(EV68_yr2011_draws_antibody_sero_two_compartment,
+                      sero_data_EV68_2011$age_max, "2011"),
+      strata_seroprev(EV68_yr2017_draws_antibody_sero_two_compartment,
+                      sero_data_EV68_2017$age_max, "2017"),
+      strata_seroprev(EV68_draws_antibody_sero_two_compartment,
+                      sero_plot_data_EV68$age_max, "pooled"))
+  ),
+  
+  tar_target(
+    file_EV68_by_year,
+    {
+      ensure_dir("outputs/stratification")
+      write.csv(EV68_year_contrasts,
+                "outputs/stratification/EV68_by_year_contrasts.csv", row.names = FALSE)
+      write.csv(EV68_year_trend,
+                "outputs/stratification/EV68_by_year_trend.csv", row.names = FALSE)
+      write.csv(EV68_year_seroprev,
+                "outputs/stratification/EV68_by_year_seroprevalence.csv", row.names = FALSE)
+      c("outputs/stratification/EV68_by_year_contrasts.csv",
+        "outputs/stratification/EV68_by_year_trend.csv",
+        "outputs/stratification/EV68_by_year_seroprevalence.csv")
+    },
+    format = "file"
+  ),
+  
+  tar_target(
+    file_EV68_by_year_foi,
+    {
+      ensure_dir("outputs/stratification")
+      g <- plot_strata_foi(
+        virus = "EV-D68",
+        
+        list(
+        `2006`  = EV68_yr2006_draws_antibody_sero_two_compartment,
+        `2011`  = EV68_yr2011_draws_antibody_sero_two_compartment,
+        `2017`  = EV68_yr2017_draws_antibody_sero_two_compartment,
+        pooled  = EV68_draws_antibody_sero_two_compartment
+      ), 
+      sero_plot_data_EV68$age_max)
+      
+      save_plot_pdf(g, "outputs/stratification/EV68_by_year_FOI.pdf", 8, 6)
+    },
+    format = "file"
+  ),
+  
+  # pre vs post 2014 (EV-D68)
+  tar_target(sero_data_EV68_pre2014,
+             subset_sero_data_by_year(sero_stan_data_EV68_shared,
+                                      ab_prep_EV68$serum_meta, c(2006, 2011))),
+  tar_target(sero_data_EV68_post2014,
+             subset_sero_data_by_year(sero_stan_data_EV68_shared,
+                                      ab_prep_EV68$serum_meta, 2017)),
+  
+  tar_stan_mcmc(
+    name = "EV68_pre2014",
+    stan_files = "Stan/antibody_sero_two_compartment.stan",
+    data = sero_data_EV68_pre2014,
+    iter_warmup = sero_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    seed = sero_seed, refresh = sero_refresh,
+    variables = sero_vars$si,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads
+  ),
+  
+  tar_stan_mcmc(
+    name = "EV68_post2014",
+    stan_files = "Stan/antibody_sero_two_compartment.stan",
+    data = sero_data_EV68_post2014,
+    iter_warmup = sero_iter_warmup,
+    iter_sampling = sero_iter_sampling - sero_iter_warmup,
+    chains = sero_chains, parallel_chains = sero_parallel,
+    seed = sero_seed, refresh = sero_refresh,
+    variables = sero_vars$si,
+    cpp_options = stan_cpp, threads_per_chain = sero_threads
+  ),
+  
+  tar_target(
+    EV68_prepost_contrast,
+    dplyr::mutate(
+      strata_contrast(EV68_pre2014_draws_antibody_sero_two_compartment,
+                      EV68_post2014_draws_antibody_sero_two_compartment,
+                      "pre-2014 (2006, 2011)", "post-2014 (2017)"),
+      virus = "EV68",
+      n_a = sero_data_EV68_pre2014$n,
+      n_b = sero_data_EV68_post2014$n)
+  ),
+  
+  tar_target(
+    EV68_prepost_seroprev,
+    dplyr::bind_rows(
+      strata_seroprev(EV68_pre2014_draws_antibody_sero_two_compartment,
+                      sero_data_EV68_pre2014$age_max, "pre-2014"),
+      strata_seroprev(EV68_post2014_draws_antibody_sero_two_compartment,
+                      sero_data_EV68_post2014$age_max, "post-2014"),
+      strata_seroprev(EV68_draws_antibody_sero_two_compartment,
+                      sero_plot_data_EV68$age_max, "pooled"))
+  ),
+  
+  tar_target(
+    file_EV68_prepost,
+    {
+      ensure_dir("outputs/stratification")
+      write.csv(EV68_prepost_contrast,
+                "outputs/stratification/EV68_pre_post_2014_contrast.csv",
+                row.names = FALSE)
+      write.csv(EV68_prepost_seroprev,
+                "outputs/stratification/EV68_pre_post_2014_seroprevalence.csv",
+                row.names = FALSE)
+      c("outputs/stratification/EV68_pre_post_2014_contrast.csv",
+        "outputs/stratification/EV68_pre_post_2014_seroprevalence.csv")
+    },
+    format = "file"
+  ),
+  
+  tar_target(
+    file_EV68_prepost_foi,
+    {
+      ensure_dir("outputs/stratification")
+      g <- plot_strata_foi(
+        virus = "EV-D68",
+        
+        list(
+        `pre-2014`  = EV68_pre2014_draws_antibody_sero_two_compartment,
+        `post-2014` = EV68_post2014_draws_antibody_sero_two_compartment,
+        pooled      = EV68_draws_antibody_sero_two_compartment
+      ), 
+      
+      sero_plot_data_EV68$age_max)
+      
+      save_plot_pdf(g, "outputs/stratification/EV68_pre_post_2014_FOI.pdf", 8, 6)
+    },
+    format = "file"
   )
 )
