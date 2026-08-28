@@ -110,7 +110,6 @@ compare_sero_models_loo <- function(draws_list,
     stop("Need at least two models to compare.", call. = FALSE)
   }
   
-  ## A named log_lik_var pins each model; an unnamed one is a candidate set.
   pinned <- !is.null(names(log_lik_var)) && all(nzchar(names(log_lik_var)))
   if (pinned) {
     unpinned <- setdiff(names(draws_list), names(log_lik_var))
@@ -126,7 +125,7 @@ compare_sero_models_loo <- function(draws_list,
   })
   names(loos) <- names(draws_list)
   
-  ## --- validity guard: loo_compare is meaningless across different data ------
+  ## ensure consistent data for valid loo comparison
   n_obs <- vapply(loos, function(x) nrow(x$pointwise), integer(1))
   if (length(unique(n_obs)) != 1L) {
     stop(
@@ -186,7 +185,7 @@ combine_model_loo_tables <- function(...) {
 
 #### k0 sensitivity analysis ####
 ##
-## refits antibody_mech_k0.stan with k0 held at -2, -1, 0, 1, 2 [and with k0 freely estimated]
+## refits antibody_mech_k0.stan with k0 held at -2, -1, 0, 1, 2
 ##
 ## panel  image
 ##
@@ -232,6 +231,7 @@ fit_k0_stage1 <- function(model, stan_data, spec,
   stan_data$k0_fixed        <- zeta
   stan_data$k0_prior_sd     <- K0_PRIOR_SD
   stan_data$phi_prior_scale <- K0_PHI_PRIOR_SCALE
+  stan_data$k1_prior_scale  <- K1_PRIOR_SCALE
   
   fit <- model$sample(
     data = stan_data, seed = seed,
@@ -991,7 +991,7 @@ serostate_reclassification <- function(summary_a, summary_b, n, k) {
 
 #### convergence diagnostics ####
 
-#' One row of convergence diagnostics for a single fit.
+# one row per fit
 sero_convergence_row <- function(summary_df, draws_df, virus, model,
                                  sigma_spec = "by state", diagnostics = NULL) {
   
@@ -1032,7 +1032,6 @@ sero_convergence_row <- function(summary_df, draws_df, virus, model,
   )
 }
 
-#' Attribute each failure to sigma collapse, omega non-identification, or both.
 label_convergence_failures <- function(df) {
   df |>
     dplyr::mutate(diagnosis = dplyr::case_when(
@@ -1143,8 +1142,7 @@ strata_contrast_all <- function(draws_list,
   })
 }
 
-#' Posterior probability of a monotone increase across three ordered strata.
-#' A stronger test than pairwise comparisons when each has limited power.
+
 strata_trend <- function(draws_list, par = "lambda_1", n_draw = 4000, seed = 1) {
   set.seed(seed)
   X <- vapply(draws_list, function(d) sample(as.numeric(d[[par]]), n_draw, TRUE),
@@ -1158,8 +1156,6 @@ strata_trend <- function(draws_list, par = "lambda_1", n_draw = 4000, seed = 1) 
   )
 }
 
-#' Model-implied seropositivity, 1 - S(a), by stratum. This is the quantity
-#' the reviewer's concern is really about.
 strata_seroprev <- function(draws, age_max, label, ages = c(1, 5, 10, 20, 40)) {
   lam <- as.matrix(draws[, paste0("lambda_long[", seq_len(age_max), "]")])
   # S(a) = exp(-cumsum(lambda)) for the SI model
@@ -1189,4 +1185,345 @@ plot_strata_foi <- function(virus, draws_list, age_max) {
     ggplot2::labs(x = "Age (Years)", y = "Force of Infection", title = virus,
                   colour = NULL, fill = NULL) +
     ggplot2::theme_minimal()
+}
+
+
+#### k1 / phi prior sensitivity analyses ####
+
+PS_LEVELS <- c("baseline", "replicate", "phi tight", "phi wide", "k1 tight", "k1 wide")
+
+ps_label_factor <- function(x) factor(x, levels = PS_LEVELS)
+
+# censoring
+ps_censoring_summary <- function(prep, virus) {
+  z <- prep$stan_data$z
+  R <- prep$stan_data$n_replicates
+  M <- prep$stan_data$n_dilutions
+  d <- prep$stan_data$d
+  
+  stopifnot(!is.unsorted(d))          # z[, M] must be the highest dilution
+  right <- z[, M] == R                # still fully neutralising at the highest
+  left  <- z[, 1] == 0                # no neutralisation even at the lowest
+  
+  tibble::tibble(
+    virus         = virus,
+    n             = nrow(z),
+    d_min         = min(d),
+    d_max         = max(d),
+    n_right_cens  = sum(right),
+    n_left_cens   = sum(left),
+    n_censored    = sum(right | left),
+    prop_censored = mean(right | left)
+  )
+}
+
+# stage 1
+
+ps_sensitivity_df <- function(x) {
+  if (is.data.frame(x)) tibble::as_tibble(x) else tibble::as_tibble(x$sensitivity)
+}
+
+fit_ps_stage1 <- function(model, stan_data, label, phi_scale, k1_scale,
+                          thin_to = NULL,
+                          sens_vars = c("k1", "mean_log_phi"),
+                          seed = 1, iter_warmup = 500, iter_sampling = 500,
+                          chains = 4, parallel_chains = 4, refresh = 200,
+                          threads_per_chain = 1) {
+  
+  stan_data$estimate_k0     <- 0L
+  stan_data$k0_fixed        <- 0
+  stan_data$k0_prior_sd     <- K0_PRIOR_SD
+  stan_data$phi_prior_scale <- phi_scale
+  stan_data$k1_prior_scale  <- k1_scale
+  
+  fit <- model$sample(
+    data = stan_data, seed = seed,
+    iter_warmup = iter_warmup, iter_sampling = iter_sampling,
+    chains = chains, parallel_chains = parallel_chains, refresh = refresh,
+    threads_per_chain = threads_per_chain
+  )
+  
+  # priorsense: sensitivity of each quantity to each prior component
+  sens <- purrr::map_dfr(
+    list(phi = "phi", k1 = "k1", joint = NULL),
+    function(sel) {
+      ps_sensitivity_df(
+        priorsense::powerscale_sensitivity(
+          fit, variable = sens_vars, prior_selection = sel
+        )
+      )
+    },
+    .id = "component"
+  ) |>
+    dplyr::mutate(label = label, .before = 1)
+  
+  dd <- posterior::as_draws_df(fit$draws())
+  lp <- as.matrix(dplyr::select(dd, dplyr::starts_with("log_phi[")))
+  
+  list(
+    label       = label,
+    phi_scale   = phi_scale,
+    k1_scale    = k1_scale,
+    sensitivity = sens,
+    scalars     = tibble::tibble(k1 = dd$k1, mean_log_phi = dd$mean_log_phi),
+    log_phi_med = matrixStats::colMedians(lp),
+    log_phi_sd  = matrixStats::colSds(lp),
+    log_phi_draws = extract_log_phi_draws(
+      draws_obj = dd, n_individuals = stan_data$n_individuals,
+      thin_to = thin_to, seed = seed
+    ),
+    diag = fit$summary(c("k1", "mean_log_phi"), "rhat", "ess_bulk")
+  )
+}
+
+ps_collect <- function(...) {
+  fits <- list(...)
+  stats::setNames(fits, vapply(fits, function(f) f$label, character(1)))[PS_LEVELS]
+}
+
+ps_shift_summary <- function(fits, virus, ref = "baseline") {
+  base_med <- fits[[ref]]$log_phi_med
+  between  <- stats::sd(base_med)
+  
+  purrr::map_dfr(fits, function(f) {
+    dif   <- f$log_phi_med - base_med
+    delta <- stats::median(dif)
+    tibble::tibble(
+      virus          = virus,
+      label          = f$label,
+      phi_scale      = f$phi_scale,
+      k1_scale       = f$k1_scale,
+      median_log_phi = stats::median(f$log_phi_med),
+      delta          = delta,
+      resid_sd       = stats::sd(dif - delta),
+      resid_frac     = stats::sd(dif - delta) / between,
+      spearman       = stats::cor(f$log_phi_med, base_med, method = "spearman"),
+      k1_med         = stats::median(f$scalars$k1),
+      max_rhat       = max(f$diag$rhat),
+      min_ess        = min(f$diag$ess_bulk)
+    )
+  })
+}
+
+ps_sensitivity_table <- function(fits, virus) {
+  purrr::map_dfr(fits, "sensitivity") |> dplyr::mutate(virus = virus, .before = 1)
+}
+
+# stage 2
+
+fit_ps_stage2 <- function(model, sero_stan_data, label,
+                          seed = 2, iter_warmup = 200, iter_sampling = 1000,
+                          chains = 4, parallel_chains = 4, refresh = 200,
+                          threads_per_chain = 1) {
+  
+  fit <- model$sample(
+    data = sero_stan_data, seed = seed,
+    iter_warmup = iter_warmup, iter_sampling = iter_sampling,
+    chains = chains, parallel_chains = parallel_chains, refresh = refresh,
+    threads_per_chain = threads_per_chain
+  )
+  
+  dd      <- posterior::as_draws_df(fit$draws())
+  age_max <- sero_stan_data$age_max
+  
+  lam <- as.matrix(dd[, paste0("lambda_long[", seq_len(age_max), "]"), drop = FALSE])
+  pb  <- as.matrix(dd[, grep("^prob_by_group\\[", names(dd), value = TRUE), drop = FALSE])
+  
+  S <- t(apply(lam, 1, function(x) exp(-cumsum(x)))) # seroprevalence (w/out seroreversion)
+  
+  scalars <- tibble::tibble(
+    lambda_1  = sr_get_draw(dd, "lambda_1"),
+    kappa     = sr_get_draw(dd, "kappa"),
+    psi       = sr_get_draw(dd, "psi"),
+    sigma_min = matrixStats::rowMins(
+      as.matrix(dd[, grep("^sigma_phi\\[", names(dd), value = TRUE), drop = FALSE]))
+  )
+  
+  list(
+    label   = label,
+    age_max = age_max,
+    scalars = scalars,
+    foi = tibble::tibble(
+      label  = label,
+      Age    = seq_len(age_max),
+      median = matrixStats::colMedians(lam),
+      lo     = matrixStats::colQuantiles(lam, probs = 0.05),
+      hi     = matrixStats::colQuantiles(lam, probs = 0.95)
+    ),
+    seroprev = tibble::tibble(
+      label  = label,
+      Age    = seq_len(age_max),
+      median = 1 - matrixStats::colMedians(S)
+    ),
+    prob_mean = colMeans(pb),
+    diag = fit$summary(c("lambda_1", "kappa", "sigma_phi"), "rhat", "ess_bulk")
+  )
+}
+
+ps_collect_s2 <- function(...) {
+  fits <- list(...)
+  stats::setNames(fits, vapply(fits, function(f) f$label, character(1)))[PS_LEVELS]
+}
+
+# summaries
+ps_foi_summary <- function(s2fits, virus, ref = "baseline",
+                           ages = c(1, 2, 5, 10, 20, 40)) {
+  base  <- s2fits[[ref]]
+  pars  <- setdiff(names(base$scalars), "sigma_min")
+  b_med <- vapply(base$scalars[pars], stats::median, numeric(1))
+  b_sd  <- vapply(base$scalars[pars], stats::sd,     numeric(1))
+  ages  <- ages[ages <= base$age_max]
+  
+  purrr::map_dfr(s2fits, function(f) {
+    med <- vapply(f$scalars[pars], stats::median, numeric(1))
+    sp  <- f$seroprev$median[match(ages, f$seroprev$Age)]
+    bsp <- base$seroprev$median[match(ages, base$seroprev$Age)]
+    dplyr::bind_rows(
+      tibble::tibble(quantity = pars, value = med,
+                     z = (med - b_med) / b_sd, abs_diff = med - b_med),
+      tibble::tibble(quantity = paste0("seroprev_age", ages), value = sp,
+                     z = NA_real_, abs_diff = sp - bsp)
+    ) |>
+      dplyr::mutate(virus = virus, label = f$label,
+                    sigma_min = stats::median(f$scalars$sigma_min), .before = 1)
+  })
+}
+
+ps_state_prob_summary <- function(s2fits, virus, ref = "baseline") {
+  base <- s2fits[[ref]]$prob_mean
+  purrr::map_dfr(s2fits, function(f) {
+    tibble::tibble(
+      virus         = virus,
+      label         = f$label,
+      max_abs_diff  = max(abs(f$prob_mean - base)),
+      mean_abs_diff = mean(abs(f$prob_mean - base)),
+      prop_gt_0.05  = mean(abs(f$prob_mean - base) > 0.05)
+    )
+  })
+}
+
+ps_reclass_summary <- function(s2fits, virus, k, ref = "baseline") {
+  n     <- length(s2fits[[ref]]$prob_mean) / k
+  stopifnot(n == round(n))
+  modal <- function(p) apply(matrix(p, nrow = n, ncol = k), 1, which.max)
+  base  <- modal(s2fits[[ref]]$prob_mean)
+  
+  purrr::map_dfr(s2fits, function(f) {
+    m <- modal(f$prob_mean)
+    tibble::tibble(virus = virus, label = f$label, n = n,
+                   n_reclassified    = sum(m != base),
+                   prop_reclassified = mean(m != base))
+  })
+}
+
+# figure
+
+ps_scale <- function() ggplot2::scale_colour_viridis_d(end = 0.9, option = "C")
+
+plot_ps_logphi <- function(fits, shift_tab) {
+  base_med <- fits[["baseline"]]$log_phi_med
+  
+  d <- purrr::map_dfr(fits, function(f) {
+    tibble::tibble(label = f$label, base = base_med, rung = f$log_phi_med)
+  }) |>
+    dplyr::left_join(dplyr::select(shift_tab, label, delta), by = "label") |>
+    dplyr::mutate(label = ps_label_factor(label)) |>
+    dplyr::filter(label != "baseline") 
+  
+  ggplot2::ggplot(d, ggplot2::aes(base, rung, colour = label)) +
+    ggplot2::geom_abline(ggplot2::aes(intercept = delta, slope = 1),
+                         linetype = "dashed", linewidth = 0.5, colour = "grey30") +
+    ggplot2::geom_point(alpha = 0.3, size = 0.5, show.legend = FALSE) +
+    ggplot2::facet_wrap(~label, nrow = 1) +
+    ps_scale() +
+    ggplot2::labs(x = expression(log~phi[i]~"(baseline prior)"),
+                  y = expression(log~phi[i]~"(varied prior)")) +
+    ggplot2::theme_bw(base_size = 9)
+}
+
+plot_ps_state_probs <- function(s2fits) {
+  base <- s2fits[["baseline"]]$prob_mean
+  
+  d <- purrr::map_dfr(s2fits, function(f) {
+    tibble::tibble(label = f$label, base = base, rung = f$prob_mean)
+  }) |>
+    dplyr::mutate(label = ps_label_factor(label)) |>
+    dplyr::filter(label != "baseline") 
+  
+  ggplot2::ggplot(d, ggplot2::aes(base, rung, colour = label)) +
+    ggplot2::geom_abline(linetype = "dashed", linewidth = 0.5, colour = "grey30") +
+    ggplot2::geom_point(alpha = 0.3, size = 0.5, show.legend = FALSE) +
+    ggplot2::facet_wrap(~label, nrow = 1) +
+    ps_scale() +
+    ggplot2::labs(x = "P(serostate), baseline prior",
+                  y = "P(serostate), varied prior") +
+    ggplot2::theme_bw(base_size = 9)
+}
+
+plot_ps_foi <- function(s2fits) {
+  d <- purrr::map_dfr(s2fits, "foi") |>
+    dplyr::mutate(label = ps_label_factor(label))
+  
+  ggplot2::ggplot(d, ggplot2::aes(Age, median, colour = label, fill = label)) +
+    ggplot2::geom_ribbon(ggplot2::aes(ymin = lo, ymax = hi),
+                         alpha = 0.15, colour = NA) +
+    ggplot2::geom_line(ggplot2::aes(linetype = label), linewidth = 0.65) +
+    ps_scale() +
+    ggplot2::scale_fill_viridis_d(end = 0.9, option = "C") +
+    ggplot2::scale_linetype_manual(
+      values = c("solid", "twodash", "longdash", "dashed", "dotdash", "dotted")) +
+    ggplot2::scale_x_log10() +
+    ggplot2::labs(x = "Age (Years)", y = "Force of Infection",
+                  colour = NULL, fill = NULL, linetype = NULL) +
+    ggplot2::theme_bw(base_size = 9) +
+    ggplot2::theme(legend.position = "bottom")
+}
+
+make_ps_figure <- function(fits, s2fits, shift_tab) {
+  (plot_ps_logphi(fits, shift_tab) /
+     plot_ps_state_probs(s2fits) /
+     plot_ps_foi(s2fits)) +
+    patchwork::plot_layout(heights = c(1, 1, 1.2)) +
+    patchwork::plot_annotation(tag_levels = "A")
+}
+
+# supplementary table
+make_ps_table <- function(shift_tab, foi_tab, state_tab, cens_tab, reclass_tab) {
+  foi_wide <- foi_tab |>
+    dplyr::filter(quantity %in% c("lambda_1", "kappa")) |>
+    dplyr::select(virus, label, quantity, z) |>
+    tidyr::pivot_wider(names_from = quantity, values_from = z,
+                       names_prefix = "z_")
+  
+  tab <- shift_tab |>
+    dplyr::left_join(foi_wide, by = c("virus", "label")) |>
+    dplyr::left_join(dplyr::select(state_tab, virus, label, max_abs_diff),
+                     by = c("virus", "label")) |>
+    dplyr::left_join(dplyr::select(cens_tab, virus, prop_censored), by = "virus") |>
+    dplyr::left_join(dplyr::select(reclass_tab, virus, label, prop_reclassified),
+                     by = c("virus", "label")) |>
+    dplyr::mutate(label = ps_label_factor(label)) |>
+    dplyr::arrange(virus, label) |>
+    dplyr::select(virus, label, phi_scale, k1_scale, delta, resid_sd, resid_frac,
+                  spearman, k1_med, z_lambda_1, z_kappa, max_abs_diff,
+                  prop_reclassified, prop_censored, max_rhat, min_ess)
+  
+  gt::gt(tab, groupname_col = "virus") |>
+    gt::tab_header(
+      title = "Sensitivity of Stage 1 and Stage 2 inference to the priors on phi and k1",
+      subtitle = paste(
+        "delta: common shift in median log phi relative to baseline.",
+        "resid_frac: residual SD as a fraction of the between-individual SD.",
+        "z: shift in FOI parameter median in baseline posterior SDs.")) |>
+    gt::fmt_number(columns = c(delta, resid_sd, resid_frac, spearman, k1_med,
+                               z_lambda_1, z_kappa, max_abs_diff, max_rhat),
+                   decimals = 3) |>
+    gt::fmt_number(columns = c(prop_censored, prop_reclassified), decimals = 3) |>
+    gt::fmt_number(columns = min_ess, decimals = 0) |>
+    gt::cols_label(label = "PRIOR", phi_scale = "PHI SCALE", k1_scale = "K1 SCALE",
+                   delta = "DELTA", resid_sd = "RESID SD", resid_frac = "RESID FRAC",
+                   spearman = "SPEARMAN", k1_med = "K1", z_lambda_1 = "Z LAMBDA1",
+                   z_kappa = "Z KAPPA", max_abs_diff = "MAX |dP|", prop_reclassified = "PROP RECLASS",
+                   prop_censored = "PROP CENS", max_rhat = "MAX RHAT",
+                   min_ess = "MIN ESS")
 }
