@@ -5,19 +5,22 @@ library(reshape2)
 
 combine_draws_three_viruses <- function(draws_ev71, draws_cva6, draws_ev68) {
   
-  vars_3state <- c("mu[1]","mu[2]","mu[3]",
-                   "sigma_phi[1]","sigma_phi[2]","sigma_phi[3]",
-                   "psi","lambda_1","kappa")
-  vars_2state <- c("mu[1]","mu[2]",
-                   "sigma_phi[1]","sigma_phi[2]",
-                   "lambda_1","kappa")
+  vars <- c("mu_x[1]", "mu_x[2]", "mu_x[3]",
+            "sigma_phi[1]", "sigma_phi[2]", "sigma_phi[3]",
+            "psi", "lambda_1", "kappa")
   
-  ev71 <- draws_ev71 %>% dplyr::select(any_of(vars_3state)) %>% mutate(Virus="EV71")
-  cva6 <- draws_cva6 %>% dplyr::select(any_of(vars_3state)) %>% mutate(Virus="CVA6")
-  ev68 <- draws_ev68 %>% dplyr::select(any_of(vars_2state)) %>% mutate(Virus="EV68")
+  pick <- function(d, virus) {
+    d %>%
+      dplyr::select(dplyr::any_of(vars)) %>%
+      dplyr::mutate(Virus = virus)
+  }
   
-  bind_rows(ev71, cva6, ev68) %>%
-    reshape2::melt(id.vars="Virus")
+  dplyr::bind_rows(
+    pick(draws_ev71, "EV71"),
+    pick(draws_cva6, "CVA6"),
+    pick(draws_ev68, "EV68")
+  ) %>%
+    reshape2::melt(id.vars = "Virus", na.rm = TRUE)
 }
 
 combine_summaries_three_viruses <- function(sum_ev71, sum_cva6, sum_ev68) {
