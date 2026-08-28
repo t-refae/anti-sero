@@ -169,16 +169,15 @@ plot_param_densities_combined <- function(draws_combined_melt) {
   keep <- c("mu_x[1]", "mu_x[2]", "mu_x[3]",
             "sigma_phi[1]", "sigma_phi[2]", "sigma_phi[3]",
             "psi", "lambda_1", "kappa")
-  dd <- draws_combined_melt %>% filter(variable %in% keep) %>%
-    filter(!(variable == "kappa" & value > 0.8))
+  dd <- draws_combined_melt %>% filter(variable %in% keep)
   
   var_labs <- c(
     "mu_x[1]"        = "mu[S]",
     "mu_x[2]"        = "mu[I[\"++\"]]",
     "mu_x[3]"        = "mu[I[\"+\"]]",
-    "sigma_phi[1]" = "sigma[phi][S]",
-    "sigma_phi[2]" = "sigma[phi][I[\"++\"]]",
-    "sigma_phi[3]" = "sigma[phi][I[\"+\"]]",
+    "sigma_phi[1]" = "sigma[phi]~(1)",
+    "sigma_phi[2]" = "sigma[phi]~(2)",
+    "sigma_phi[3]" = "sigma[phi]~(3)",
     "psi"          = "psi",
     "lambda_1"     = "lambda[1]",
     "kappa"         = "kappa"
@@ -222,9 +221,9 @@ make_param_table <- function(virus, summary_df) {
       "mu_x[1]"        = "\\mu_{S}",
       "mu_x[2]"        = "\\mu_{I_{++}}",
       "mu_x[3]"        = "\\mu_{I_{+}}",
-      "sigma_phi[1]" = "\\sigma_{\\phi,S}",
-      "sigma_phi[2]" = "\\sigma_{\\phi,I_{++}}",
-      "sigma_phi[3]" = "\\sigma_{\\phi,I_{+}}",
+      "sigma_phi[1]" = "\\sigma_{\\phi}",
+      # "sigma_phi[2]" = "\\sigma_{\\phi,I_{++}}",
+      # "sigma_phi[3]" = "\\sigma_{\\phi,I_{+}}",
       "psi"          = "\\psi",
       "lambda_1"     = "\\lambda_{1}",
       "kappa"         = "\\kappa"
@@ -685,6 +684,103 @@ plot_serodynamics <- function(
     guides(color = guide_legend(override.aes = list(linewidth = 2)))
 }
 
+plot_serodynamics_by_year <- function(
+    virus,
+    plot_data,
+    # pooled_draws,
+    strata_draws,          # named list, e.g. list(`2006` = ..., `2017` = ...)
+    n_samples = 300,
+    seed = 1
+) {
+  age_max <- plot_data$age_max
+  ages <- 0:(age_max - 1)
+  lam_cols <- paste0("lambda_long[", 1:age_max, "]")
+  
+  summarise_S <- function(d, lab) {
+    stopifnot(all(lam_cols %in% names(d)))
+    set.seed(seed)
+    ii <- sample.int(nrow(d), size = min(n_samples, nrow(d)))
+    S <- do.call(cbind, lapply(ii, function(r) {
+      simulate_serodynamics(as.numeric(d[r, lam_cols]),
+                            if ("psi" %in% names(d)) d$psi[r] else 0,
+                            age_max)[, "S"]
+    }))
+    data.frame(Age = ages, mean = rowMeans(S),
+               lo = apply(S, 1, quantile, 0.025),
+               hi = apply(S, 1, quantile, 0.975),
+               Stratum = lab)
+  }
+  
+  strata <- dplyr::bind_rows(lapply(names(strata_draws), function(nm)
+    summarise_S(strata_draws[[nm]], nm)))
+  strata$Stratum <- factor(strata$Stratum, levels = names(strata_draws))
+  
+  ramp <- c("#8FD1FF", "#489CD6", "#0066AD")[seq_along(strata_draws)]
+  names(ramp) <- names(strata_draws)
+  
+  ggplot(strata, aes(Age, mean, colour = Stratum, fill = Stratum)) +
+    geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.15, colour = NA) +
+    geom_line(linewidth = 1.3) +
+    scale_colour_manual(values = ramp, name = "Survey") +
+    scale_fill_manual(values = ramp, name = "Survey") +
+    scale_x_continuous(breaks = seq(0, 90, by = 10), limits = c(0, age_max)) +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(x = "Age (Years)", y = "Proportion susceptible",
+         title = paste0(pretty_virus(virus), " by survey")) +
+    theme_minimal() +
+    theme(
+      plot.title   = element_text(size = 16, face = "bold", hjust = 0.5),
+      axis.title   = element_text(size = 16, face = "bold"),
+      axis.text    = element_text(size = 14),
+      legend.position = c(0.97, 0.97),
+      legend.justification = c("right", "top"),
+      legend.background = element_rect(fill = alpha("white", 0.8), colour = NA),
+      legend.title = element_text(size = 13, face = "bold"),
+      legend.text  = element_text(size = 12),
+      legend.key.width = grid::unit(1.2, "cm")
+    )
+}
+
+plot_foi_by_year <- function(virus, plot_data, strata_draws) {
+  age_max <- plot_data$age_max
+  lam_cols <- paste0("lambda_long[", seq_len(age_max), "]")
+  
+  d <- dplyr::bind_rows(lapply(names(strata_draws), function(nm) {
+    dr <- strata_draws[[nm]]
+    stopifnot(all(lam_cols %in% names(dr)))
+    M <- as.matrix(dr[, lam_cols])
+    tibble::tibble(Age = seq_len(age_max),
+                   median = matrixStats::colMedians(M),
+                   lo = matrixStats::colQuantiles(M, probs = 0.025),
+                   hi = matrixStats::colQuantiles(M, probs = 0.975),
+                   Stratum = nm)
+  }))
+  d$Stratum <- factor(d$Stratum, levels = names(strata_draws))
+  
+  ramp <- c("#FFDE75", "#C1A13B", "#826300")[seq_along(strata_draws)]
+  names(ramp) <- names(strata_draws)
+  
+  ggplot(d, aes(Age, median, colour = Stratum, fill = Stratum)) +
+    geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.15, colour = NA) +
+    geom_line(linewidth = 1.3) +
+    scale_colour_manual(values = ramp, name = "Survey") +
+    scale_fill_manual(values = ramp, name = "Survey") +
+    scale_x_log10() +
+    labs(x = "Age (Years)", y = "Force of Infection",
+         title = paste0(pretty_virus(virus), " by survey")) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(hjust = 0.5, size = 20, face = "bold"),
+      axis.title = element_text(size = 16, face = "bold"),
+      axis.text  = element_text(size = 12),
+      legend.position = c(0.97, 0.97),
+      legend.justification = c("right", "top"),
+      legend.background = element_rect(fill = alpha("white", 0.8), colour = NA),
+      legend.title = element_text(size = 13, face = "bold"),
+      legend.text  = element_text(size = 12),
+      legend.key.width = grid::unit(1.2, "cm")
+    )
+}
 
 
 # new vs old FOI comparison
@@ -773,30 +869,45 @@ plot_foi_new_old <- function(virus, new_df, old_df) {
 
 
 # for combined weighted avg phi, serodynamics, and new vs old FoI plots
-plot_patchwork <- function(cva6_plot, ev71_plot, ev68_plot, lines=TRUE, FOI=FALSE) {
+plot_patchwork <- function(cva6_plot, ev71_plot, ev68_plot, lines=TRUE, FOI=FALSE, fourth_plot = NULL) {
   
   if (FOI) {
-    ev71_legend <- cowplot::get_legend(
-      ev71_plot + theme(legend.position = "right",
-                        legend.title = element_text(size = 18, face = "bold"),
-                        legend.text = element_text(size = 16),
-                        legend.key.height = grid::unit(1.5, "cm"),
-                        legend.key.width = if (lines) {grid::unit(4, "cm")} else {grid::unit(1, "cm")}
-                        )
-    )
-    
-    patchwork::wrap_plots(
-      cva6_plot + labs(x = NULL) + theme(legend.position = "none"),
-      ev71_plot + labs(x = NULL, y = NULL) + theme(legend.position = "none"),
-      ev68_plot + theme(legend.position = "none"),
-      patchwork::wrap_elements(full = ev71_legend),
-      design = "AB\nCD"
-    ) &
-      theme(
-        legend.position = "none",
-        legend.box = "vertical",
-        legend.direction = "vertical"
+    if (is.null(fourth_plot)) {
+      ev71_legend <- cowplot::get_legend(
+        ev71_plot + theme(legend.position = "right",
+                          legend.title = element_text(size = 18, face = "bold"),
+                          legend.text = element_text(size = 16),
+                          legend.key.height = grid::unit(1.5, "cm"),
+                          legend.key.width = if (lines) grid::unit(4, "cm")
+                          else grid::unit(1, "cm"))
       )
+      patchwork::wrap_plots(
+        cva6_plot + labs(x = NULL)           + theme(legend.position = "none"),
+        ev71_plot + labs(x = NULL, y = NULL) + theme(legend.position = "none"),
+        ev68_plot                            + theme(legend.position = "none"),
+        patchwork::wrap_elements(full = ev71_legend),
+        design = "AB\nCD"
+      ) &
+        theme(legend.position = "none", legend.box = "vertical",
+              legend.direction = "vertical")
+    } else {
+      inset_legend <- theme(
+        legend.position = c(0.97, 0.97),
+        legend.justification = c("right", "top"),
+        legend.background = element_rect(fill = alpha("white", 0.8), colour = NA),
+        legend.title = element_text(size = 13, face = "bold"),
+        legend.text = element_text(size = 12),
+        legend.key.width = grid::unit(1.2, "cm")
+      )
+      
+      patchwork::wrap_plots(
+        cva6_plot   + labs(x = NULL)           + inset_legend,
+        ev71_plot   + labs(x = NULL, y = NULL) + inset_legend,
+        ev68_plot                              + inset_legend,
+        fourth_plot + labs(y = NULL),
+        design = "AB\nCD"
+      )
+    }
   }
   
   else {
@@ -817,13 +928,29 @@ plot_patchwork <- function(cva6_plot, ev71_plot, ev68_plot, lines=TRUE, FOI=FALS
     
     legend_grob <- cowplot::get_legend(legend_plot)
     
-    patchwork::wrap_plots(
-      cva6_plot + labs(x=NULL)         + theme(legend.position = "none"),
-      ev71_plot + labs(x=NULL, y=NULL) + theme(legend.position = "none"),
-      ev68_plot                        + theme(legend.position = "none"),
-      patchwork::wrap_elements(full = legend_grob),
-      design = "AB\nCD"
-    )
+    if (is.null(fourth_plot)) {
+      patchwork::wrap_plots(
+        cva6_plot + labs(x = NULL)           + theme(legend.position = "none"),
+        ev71_plot + labs(x = NULL, y = NULL) + theme(legend.position = "none"),
+        ev68_plot                            + theme(legend.position = "none"),
+        patchwork::wrap_elements(full = legend_grob),
+        design = "AB\nCD"
+      )
+    } else {
+      patchwork::wrap_plots(
+        cva6_plot + labs(x = NULL) +
+          theme(legend.position = c(0.97, 0.97),
+                legend.justification = c("right", "top"),
+                legend.background = element_rect(fill = alpha("white", 0.8),
+                                                 colour = NA),
+                legend.title = element_text(size = 13, face = "bold"),
+                legend.text = element_text(size = 12)),
+        ev71_plot   + labs(x = NULL, y = NULL) + theme(legend.position = "none"),
+        ev68_plot                              + theme(legend.position = "none"),
+        fourth_plot + labs(y = NULL),          # keeps its own inset legend
+        design = "AB\nCD"
+      )
+    }
   }
 }
 
@@ -1215,7 +1342,7 @@ plot_phi_by_age_group <- function(phi_age_group_df) {
       data = counts_df,
       aes(x = label_x, y = age_group, label = paste0("n = ", n)),
       inherit.aes = FALSE,
-      hjust = 0,
+      hjust = 0.9,
       vjust = -0.6,   
       size = 2.5,
       show.legend = FALSE
