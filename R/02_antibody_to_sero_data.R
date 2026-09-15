@@ -160,14 +160,14 @@ summarise_reed_muench_fit <- function(draws_obj) {
     data.frame(
       parameter = "phi",
       median = stats::median(phi),
-      q2.5 = unname(stats::quantile(phi, 0.025)),
-      q97.5 = unname(stats::quantile(phi, 0.975))
+      `q2.5` = unname(stats::quantile(phi, 0.025)),
+      `q97.5` = unname(stats::quantile(phi, 0.975))
     ),
     data.frame(
       parameter = "k1",
       median = stats::median(k1),
-      q2.5 = unname(stats::quantile(k1, 0.025)),
-      q97.5 = unname(stats::quantile(k1, 0.975))
+      `q2.5` = unname(stats::quantile(k1, 0.025)),
+      `q97.5` = unname(stats::quantile(k1, 0.975))
     ),
     data.frame(
       parameter = "endpoint_50",
