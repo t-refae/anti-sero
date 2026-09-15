@@ -11,7 +11,7 @@ tar_option_set(
     
     # data analysis tools
     "dplyr", "tidyr", "purrr", "stringr", "posterior", "matrixStats", "reshape2",
-    "priorsense",
+    "priorsense", "tibble",
     
     # plotting / saving pdfs
     "ggplot2", "gt", "gtExtras", "cowplot", "grid", "gridExtra", "khroma",
@@ -446,18 +446,15 @@ list(
   # -------- FOI plots --------
   tar_target(
     CVA6_FOI_plot,
-    plot_foi_short_long("CVA6", sero_plot_data_CVA6, CVA6_shared_summary_antibody_sero,
-                        CVA6_shared_draws_antibody_sero)
+    plot_foi_short_long("CVA6", sero_plot_data_CVA6, CVA6_shared_draws_antibody_sero)
   ),
   tar_target(
     EV71_FOI_plot,
-    plot_foi_short_long("EV71", sero_plot_data_EV71, EV71_shared_summary_antibody_sero,
-                        EV71_shared_draws_antibody_sero)
+    plot_foi_short_long("EV71", sero_plot_data_EV71, EV71_shared_draws_antibody_sero)
   ),
   tar_target(
     EV68_FOI_plot,
-    plot_foi_short_long("EV68", sero_plot_data_EV68, EV68_summary_antibody_sero_two_compartment,
-                        EV68_draws_antibody_sero_two_compartment)
+    plot_foi_short_long("EV68", sero_plot_data_EV68, EV68_draws_antibody_sero_two_compartment)
   ),
   
   tar_target( # stratified by survey year
@@ -487,15 +484,15 @@ list(
   # -------- Parameter tables --------
   tar_target(
     CVA6_param_table,
-    make_param_table("CVA6", CVA6_shared_summary_antibody_sero)
+    make_param_table("CVA6", CVA6_shared_summary_antibody_sero, CVA6_shared_draws_antibody_sero)
   ),
   tar_target(
     EV71_param_table,
-    make_param_table("EV71", EV71_shared_summary_antibody_sero)
+    make_param_table("EV71", EV71_shared_summary_antibody_sero, EV71_shared_draws_antibody_sero)
   ),
   tar_target(
     EV68_param_table,
-    make_param_table("EV68", EV68_summary_antibody_sero_two_compartment)
+    make_param_table("EV68", EV68_summary_antibody_sero_two_compartment, EV68_draws_antibody_sero_two_compartment)
   ),
   
   # -------- Save outputs --------
@@ -539,17 +536,6 @@ list(
   tar_target(file_EV71_serodynamics, save_plot_pdf(EV71_serodynamics_plot, "outputs/EV71/EV71_serodynamics_plot.pdf", 8, 6), format = "file"),
   tar_target(file_EV68_serodynamics, save_plot_pdf(EV68_serodynamics_plot, "outputs/EV68/EV68_serodynamics_plot.pdf", 8, 6), format = "file"),
   tar_target(file_EV68_serodynamics_three_comp, save_plot_pdf(EV68_serodynamics_plot_three_comp, "outputs/EV68/EV68_serodynamics_plot_three_comp.pdf", 8, 6), format = "file"),
-  
-  # tar_target(
-  #   combined_serodynamics_plot,
-  #   plot_patchwork(
-  #     CVA6_serodynamics_plot,
-  #     EV71_serodynamics_plot,
-  #     EV68_serodynamics_plot
-  #   )
-  # ),
-  # 
-  # tar_target(file_combined_serodynamics, save_plot_pdf(combined_serodynamics_plot, "outputs/combined/combined_serodynamics_plot.pdf", 12, 10), format = "file"),
   
   tar_target(
     file_combined_serodynamics,
