@@ -1182,9 +1182,9 @@ plot_strata_foi <- function(virus, draws_list, age_max) {
     ggplot2::geom_ribbon(ggplot2::aes(ymin = lo, ymax = hi), alpha = 0.2, colour = NA) +
     ggplot2::geom_line(linewidth = 1.2) +
     ggplot2::scale_x_log10() +
-    ggplot2::labs(x = "Age (Years)", y = "Force of Infection", title = virus,
+    ggplot2::labs(x = "Age (Years)", y = "Force of Infection",# title = virus,
                   colour = NULL, fill = NULL) +
-    ggplot2::theme_minimal()
+    ggplot2::theme_minimal(base_size=14)
 }
 
 
@@ -1438,7 +1438,7 @@ plot_ps_logphi <- function(fits, shift_tab) {
     ps_scale() +
     ggplot2::labs(x = expression(log~phi[i]~"(baseline prior)"),
                   y = expression(log~phi[i]~"(varied prior)")) +
-    ggplot2::theme_bw(base_size = 9)
+    ggplot2::theme_bw(base_size = 16)
 }
 
 plot_ps_state_probs <- function(s2fits) {
@@ -1457,7 +1457,7 @@ plot_ps_state_probs <- function(s2fits) {
     ps_scale() +
     ggplot2::labs(x = "P(serostate), baseline prior",
                   y = "P(serostate), varied prior") +
-    ggplot2::theme_bw(base_size = 9)
+    ggplot2::theme_bw(base_size = 16)
 }
 
 plot_ps_foi <- function(s2fits) {
@@ -1475,16 +1475,28 @@ plot_ps_foi <- function(s2fits) {
     ggplot2::scale_x_log10() +
     ggplot2::labs(x = "Age (Years)", y = "Force of Infection",
                   colour = NULL, fill = NULL, linetype = NULL) +
-    ggplot2::theme_bw(base_size = 9) +
+    ggplot2::theme_bw(base_size = 16) +
     ggplot2::theme(legend.position = "bottom")
 }
 
-make_ps_figure <- function(fits, s2fits, shift_tab) {
-  (plot_ps_logphi(fits, shift_tab) /
-     plot_ps_state_probs(s2fits) /
-     plot_ps_foi(s2fits)) +
-    patchwork::plot_layout(heights = c(1, 1, 1.2)) +
-    patchwork::plot_annotation(tag_levels = "A")
+make_ps_figure <- function(fits, s2fits, shift_tab, legend) {
+  
+  if (legend) {
+    (plot_ps_logphi(fits, shift_tab) /
+       plot_ps_state_probs(s2fits) /
+       plot_ps_foi(s2fits)) +
+      patchwork::plot_layout(heights = c(1, 1, 1.2)) +
+      patchwork::plot_annotation(tag_levels = "A")
+  } else {
+    (plot_ps_logphi(fits, shift_tab) /
+       plot_ps_state_probs(s2fits) /
+       plot_ps_foi(s2fits)) +
+      patchwork::plot_layout(heights = c(1, 1, 1.2)) +
+      patchwork::plot_annotation(tag_levels = "A") &
+      theme(legend.position="none")
+  }
+  
+  
 }
 
 # supplementary table

@@ -156,24 +156,27 @@ ps_targets <- list(
     file_ps_CVA6,
     save_plot_pdf(
       make_ps_figure(ps_fits_CVA6, ps_s2_CVA6,
-                     dplyr::filter(ps_shift_table, virus == "CVA6")),
-      "outputs/CVA6/CVA6_prior_sensitivity.pdf", 11, 9),
+                     dplyr::filter(ps_shift_table, virus == "CVA6"),
+                     legend=FALSE),
+      "outputs/CVA6/CVA6_prior_sensitivity.pdf", 15, 11.25),
     format = "file"
   ),
   tar_target(
     file_ps_EV71,
     save_plot_pdf(
       make_ps_figure(ps_fits_EV71, ps_s2_EV71,
-                     dplyr::filter(ps_shift_table, virus == "EV71")),
-      "outputs/EV71/EV71_prior_sensitivity.pdf", 11, 9),
+                     dplyr::filter(ps_shift_table, virus == "EV71"),
+                     legend=FALSE),
+      "outputs/EV71/EV71_prior_sensitivity.pdf", 15, 11.25),
     format = "file"
   ),
   tar_target(
     file_ps_EV68,
     save_plot_pdf(
       make_ps_figure(ps_fits_EV68, ps_s2_EV68,
-                     dplyr::filter(ps_shift_table, virus == "EV68")),
-      "outputs/EV68/EV68_prior_sensitivity.pdf", 11, 9),
+                     dplyr::filter(ps_shift_table, virus == "EV68"),
+                     legend=TRUE),
+      "outputs/EV68/EV68_prior_sensitivity.pdf", 15, 11.25),
     format = "file"
   ),
 

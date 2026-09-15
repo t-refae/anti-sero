@@ -78,8 +78,8 @@ extract_prob_matrix <- function(summary_df, n, k = 3) {
   mat
 }
 
-# FOI plot: "short" from (lambda_1,kappa) draws, "long" from lambda_long summary
-plot_foi_short_long <- function(virus, plot_data, summary_df, draws_df) {
+# FOI plot: "short" from (lambda_1,kappa) draws, "long" from "lambda_long[1..age_max]" draws
+plot_foi_short_long <- function(virus, plot_data, draws_df) {
   max_age <- plot_data$age_max
   age_seq <- 0:(max_age - 1)
   
@@ -95,23 +95,25 @@ plot_foi_short_long <- function(virus, plot_data, summary_df, draws_df) {
   short_df <- data.frame(
     Age = age_seq,
     mean = colMeans(FOI_mat),
-    q5 = apply(FOI_mat, 2, quantile, 0.05),
-    q95 = apply(FOI_mat, 2, quantile, 0.95)
+    `q2.5` = apply(FOI_mat, 2, quantile, 0.025),
+    `q97.5` = apply(FOI_mat, 2, quantile, 0.975)
   ) %>% filter(Age > 0)
   
-  long_df <- summary_df %>%
-    filter(str_detect(variable, "^lambda_long\\[")) %>%
-    transmute(
-      Age = as.integer(str_match(variable, "^lambda_long\\[(\\d+)\\]$")[, 2]) - 1L,
-      mean = mean, q5 = q5, q95 = q95
-    ) %>% filter(Age > 0)
+  post_long <- draws_df %>% select(matches("lambda_long"))
+  
+  long_df <- data.frame(
+    Age = age_seq,
+    mean=colMeans(post_long),
+    `q2.5` = apply(post_long, 2, quantile, 0.025),
+    `q97.5` = apply(post_long, 2, quantile, 0.975)
+  ) %>% filter(Age > 0)
   
   short_col <- virus_cols[[virus]]
   
   ggplot() +
-    geom_ribbon(data = long_df, aes(x = Age, ymin = q5, ymax = q95, fill = "Long"), alpha = 0.2) +
+    geom_ribbon(data = long_df, aes(x = Age, ymin = `q2.5`, ymax = `q97.5`, fill = "Long"), alpha = 0.2) +
     geom_line(data = long_df, aes(x = Age, y = mean, color = "Long"), linewidth = 1.2) +
-    geom_ribbon(data = short_df, aes(x = Age, ymin = q5, ymax = q95, fill = "Short"), alpha = 0.2) +
+    geom_ribbon(data = short_df, aes(x = Age, ymin = `q2.5`, ymax = `q97.5`, fill = "Short"), alpha = 0.2) +
     geom_line(data = short_df, aes(x = Age, y = mean, color = "Short"), linewidth = 1.2) +
     scale_color_manual(values = c(Long = "black", Short = short_col)) +
     scale_fill_manual(values = c(Long = "black", Short = short_col)) +
@@ -149,13 +151,13 @@ plot_foi_combined <- function(draws_combined_melt, max_age = 92) {
     group_by(Virus, Age) %>%
     summarise(
       mean = mean(FOI, na.rm = TRUE),
-      q5 = quantile(FOI, 0.05, na.rm = TRUE),
-      q95 = quantile(FOI, 0.95, na.rm = TRUE),
+      `q2.5` = quantile(FOI, 0.025, na.rm = TRUE),
+      `q97.5` = quantile(FOI, 0.975, na.rm = TRUE),
       .groups = "drop"
     )
   
   ggplot(foi_summ, aes(x = Age, y = mean, color = Virus, fill = Virus, group = Virus)) +
-    geom_ribbon(aes(ymin = q5, ymax = q95), alpha = 0.2, color = NA) +
+    geom_ribbon(aes(ymin = `q2.5`, ymax = `q97.5`), alpha = 0.2, color = NA) +
     geom_line(linewidth = 1.2) +
     scale_virus_color() +
     scale_virus_fill() +
@@ -210,7 +212,7 @@ plot_param_densities_combined <- function(draws_combined_melt) {
     )
 }
 
-make_param_table <- function(virus, summary_df) {
+make_param_table <- function(virus, summary_df, draws_df) {
   n_states <- detect_n_states(summary_df)
   
   if (n_states == 3) {
@@ -243,11 +245,21 @@ make_param_table <- function(virus, summary_df) {
   }
   desired_order <- unname(recode_map[vars])
   
+  central_95_CrI <- draws_df %>%
+    select(any_of(vars)) %>%
+    sapply(quantile, probs=c(0.025, 0.975)) %>% t() %>% as.data.frame() %>%
+    rownames_to_column(var = "var")
+  
+  # make sure variables are arranged in the same order
+  stopifnot(sum(!(central_95_CrI[,1] == summary_df %>% filter(variable %in% vars) %>% select(variable) %>% unlist())) == 0)
   
   tab <- summary_df %>%
     filter(variable %in% vars) %>%
-    select(variable, mean, median, sd, q5, q95, rhat, ess_bulk, ess_tail) %>%
-    mutate(variable = recode(variable, !!!recode_map))
+    select(variable, mean, median, sd, rhat, ess_bulk, ess_tail) %>%
+    mutate(variable = recode(variable, !!!recode_map)) %>%
+    mutate(`q2.5`  = central_95_CrI[,"2.5%"],
+           `q97.5` = central_95_CrI[,"97.5%"]) %>%
+    relocate(all_of(c("q2.5", "q97.5")), .after=sd)
   
   tab$variable <- factor(tab$variable, levels = desired_order)
   tab <- tab %>% arrange(variable)
@@ -267,7 +279,7 @@ make_param_table <- function(virus, summary_df) {
     ) %>%
     cols_align(
       align = "right",
-      columns = c(mean, median, sd, q5, q95, rhat, ess_bulk, ess_tail)
+      columns = c(mean, median, sd, `q2.5`, `q97.5`, rhat, ess_bulk, ess_tail)
     ) %>%
     tab_style(
       style = list(
@@ -279,7 +291,7 @@ make_param_table <- function(virus, summary_df) {
     cols_width(
       variable ~ px(105),
       mean ~ px(68), median ~ px(68), sd ~ px(68),
-      q5 ~ px(68), q95 ~ px(68), rhat ~ px(58),
+      `q2.5` ~ px(68), `q97.5` ~ px(68), rhat ~ px(58),
       ess_bulk ~ px(72), ess_tail ~ px(72)
     ) %>%
     tab_options(
@@ -766,6 +778,7 @@ plot_foi_by_year <- function(virus, plot_data, strata_draws) {
     scale_colour_manual(values = ramp, name = "Survey") +
     scale_fill_manual(values = ramp, name = "Survey") +
     scale_x_log10() +
+    # ylim(0,0.6) +
     labs(x = "Age (Years)", y = "Force of Infection",
          title = paste0(pretty_virus(virus), " by survey")) +
     theme_minimal() +
@@ -799,8 +812,8 @@ summarise_old_foi <- function(virus, age_max, old_age_offset = 0) {
   out <- data.frame(
     Age  = age_seq,
     mean = rowMeans(M),
-    q5   = matrixStats::rowQuantiles(M, probs = 0.05),
-    q95  = matrixStats::rowQuantiles(M, probs = 0.95)
+    `q2.5`   = matrixStats::rowQuantiles(M, probs = 0.025),
+    `q97.5`  = matrixStats::rowQuantiles(M, probs = 0.975)
   )
   rm(M, old_post)
   out
@@ -811,16 +824,16 @@ foi_new_summary <- function(draws_df, age_max) {
   M <- as.matrix(draws_df[, cols, drop = FALSE])
   data.frame(Age  = seq_len(age_max),
              mean = colMeans(M),
-             q5   = apply(M, 2, stats::quantile, 0.05),
-             q95  = apply(M, 2, stats::quantile, 0.95))
+             `q2.5`   = apply(M, 2, stats::quantile, 0.025),
+             `q97.5`  = apply(M, 2, stats::quantile, 0.975))
 }
 
 plot_foi_new_old <- function(virus, new_df, old_df) {
   virus_col <- virus_cols[[virus]]
   ggplot() +
-    geom_ribbon(data = new_df, aes(Age, ymin = q5, ymax = q95, fill = "New"), alpha = 0.3) +
+    geom_ribbon(data = new_df, aes(Age, ymin = `q2.5`, ymax = `q97.5`, fill = "New"), alpha = 0.3) +
     geom_line(  data = new_df, aes(Age, mean,      color = "New"), linewidth = 1.5) +
-    geom_ribbon(data = old_df, aes(Age, ymin = q5, ymax = q95, fill = "Old"), alpha = 0.3) +
+    geom_ribbon(data = old_df, aes(Age, ymin = `q2.5`, ymax = `q97.5`, fill = "Old"), alpha = 0.3) +
     geom_line(  data = old_df, aes(Age, mean,      color = "Old"), linewidth = 1.5) +
     labs(
       title = pretty_virus(virus),
@@ -832,7 +845,7 @@ plot_foi_new_old <- function(virus, new_df, old_df) {
     scale_x_log10() +
     scale_y_continuous(
       breaks = seq(0, 0.6, by = 0.2),
-      limits = c(0, 0.66)
+      limits = c(0, 0.7)
     ) +
     scale_color_manual(
       values = c(
@@ -1211,8 +1224,8 @@ plot_phi_vs_titer_combined <- function(phi_titer_summary_df) {
     scale_virus_color(name = "Enterovirus") +
     
     labs(
-      x = "Endpoint dilution titre",
-      y = "Antibody concentration"
+      x = "Endpoint titre",
+      y = expression("Antibody concentration  " (phi[i]))
     ) +
     
     theme_minimal() +
@@ -1234,23 +1247,24 @@ plot_phi_over_dilution <- function(df) {
                  group = interaction(dilutions, virus))) +
     geom_boxplot(
       orientation = "x",
-      position = position_dodge(width = 0.75),
-      width = 0.55,
+      position = position_dodge(width = 0.175),
+      width = 0.15,
       outlier.shape = NA,
       linewidth = 0.6,
       color = "black"
     ) +
-    scale_x_continuous(
-      trans = "log2",
-      breaks = sort(unique(df$dilutions))
-    ) +
+    # scale_x_continuous(
+    #   trans = "log2",
+    #   breaks = sort(unique(df$dilutions))
+    # ) +
+    scale_x_log10(breaks = c(1,10,100,1000)) +
     scale_y_continuous(
       breaks = scales::pretty_breaks(n = 6)
     ) +
     scale_virus_fill() +
     scale_virus_color() +
     labs(
-      x = "Serum dilution",
+      x = "Serum dilution (d)",
       y = expression(log[10](phi[i] / d))
     ) +
     theme_minimal() +
@@ -1288,7 +1302,8 @@ make_fig_2 <- function(reed_muench_plot, phi_vs_titer_plot, conc_vs_dilution_plo
         axis.title.y = element_text(size = 20, face = "bold"),
         axis.text  = element_text(size = 14),
         legend.position = "none"
-        ),
+      ),
+    
     
     nrow = 1,
     widths = c(1, 1, 1)
